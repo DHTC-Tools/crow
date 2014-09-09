@@ -211,83 +211,119 @@ class HistoryWatcher(object):
 			time.sleep(self._interval)
 
 
-# Compute a unique identifier for an instantaneous job state
-# by hashing each classad value (ordered by sorted classad names).
-# This will be used to determine whether we already know about this
-# exact job state or "version".
-def jobhash(rec):
-	m = md5()
-	for k in sorted(filter(lambda k: not k.startswith('_'), rec.keys())):
-		m.update(str(rec[k]))
-	return m.hexdigest()[:16]
+
+class CrowDB(object):
+	'''Provides a base algorithm for updating a database with job
+	information, abstracted over get/set methods that are implemented
+	by a subclass.  See CrowMongo below for example.'''
+
+	@staticmethod
+	def jobhash(rec):
+		'''Compute a unique identifier for an instantaneous job state
+		by hashing each classad value (ordered by sorted classad names).
+		This will be used to determine whether we already know about this
+		exact job state or "version".'''
+		m = md5()
+		for k in sorted(filter(lambda k: not k.startswith('_'), rec.keys())):
+			m.update(str(rec[k]))
+		return m.hexdigest()[:16]
+
+	# Given a job description (snapshot), ensure that the job is up to
+	# date in the database by updating or inserting records as needed.
+	def update(self, job):
+		jobid = job['GlobalJobId']
+		hash = self.jobhash(job)
+
+		jobent = self.jobent(jobid)
+		if jobent:
+			# Already present.  Check for significant changes.
+			# Latest is a full job snapshot, not a reference.
+			latest, lhash = self.latest(jobid, jobent)
+
+			if hash == lhash:
+				# No changes whatsoever.
+				print '+ no change to %s' % jobid
+
+			# This is odd: condor history gives two 'EnteredCurrentStatus' values.
+			# I don't think it's a problem so long as the later one is second in
+			# the history file.  (It will overwrite the prior when creating dicts.)
+			# If this turns out problematic, we can add logic to choose the better
+			# value; in most cases it will be the larger number.
+
+			elif latest['EnteredCurrentStatus'] == job['EnteredCurrentStatus']:
+				# No change of state.  Simply update latest.
+				print '+ updating %s to latest' % jobid
+				self.setlatest(jobid, job, hash)
+
+			else:
+				# State change occurred.  Copy latest to history, then save
+				# current as latest.
+				self.addhistory(jobid, jobent, latest, lhash)
+				self.setlatest(jobid, job, hash)
+
+				# Log changes.
+				statelog = JobStates[latest['JobStatus']]
+				if latest['JobStatus'] != job['LastJobStatus']:
+					statelog += ' -> ' + JobStates[job['LastJobStatus']]
+				statelog += ' -> ' + JobStates[job['JobStatus']]
+				print '+ augmenting history on %s (state %s at %s)' % \
+				      (jobid, statelog, tfmt(job['EnteredCurrentStatus']))
+
+		else:
+			# No jobent -> never seen before.  Enter ONLY a jobent, no history.
+			print '+ adding job %s' % jobid
+			self.addjob(jobid, job, hash)
 
 
-# Given a job description (snapshot), ensure that the job is up to
-# date in the database by updating or inserting records as needed.
-def update(db, job):
-	jobid = job['GlobalJobId']
-	hash = jobhash(job)
+class CrowMongo(CrowDB):
+	'''Implements a MongoDB store for job history that follows the
+	common update logic in CrowDB above.'''
 
-	# Is this jobid in db?  If not we will add it below.
+	def __init__(self, addr, name, prefix='crow_'):
+		try:
+			conn = pymongo.MongoClient(addr)
+		except AttributeError:
+			conn = pymongo.Connection(addr)
+		self.db = conn[prefix + name]
+
 	# A jobent record has three keys:
 	#   _id: the GlobalJobId from condor classads
 	#   snapshots: a list of valid snapshot ids
 	#   latest: the most recent snapshot stored
 	#           (** not necessarily the most recent observed **)
 	#   latestid: the snapshot id (hash) of latest
-	jobent = db.jobs.find_one({"_id": jobid})
-	if jobent:
-		# Already present.  Check for significant changes.
-		# Latest is a full job snapshot, not a reference.
-		latest = jobent['latest']
-		lhash = jobent['latestid']
 
-		# This is odd: condor history gives two 'EnteredCurrentStatus' values.
-		# I don't think it's a problem so long as the later one is second in
-		# the history file.  (It will overwrite the prior when creating dicts.)
-		# If this turns out problematic, we can add logic to choose the better
-		# value; in most cases it will be the larger number.
+	def jobent(self, jobid):
+		return self.db.jobs.find_one({"_id": jobid})
 
-		if hash == lhash:
-			# No changes whatsoever.
-			print '+ no change to %s' % jobid
+	def latest(self, jobid, jobent):
+		return jobent['latest'], jobent['latestid']
 
-		elif latest['EnteredCurrentStatus'] == job['EnteredCurrentStatus']:
-			# No change of state.  Simply update latest.
-			print '+ updating %s to latest' % jobid
-			db.jobs.update({'_id': jobid}, {'$set': {'latest': job}})
-			db.jobs.update({'_id': jobid}, {'$set': {'latestid': hash}})
+	def jobhistory(self, jobid, jobent):
+		return jobent['history']
 
-		else:
-			# State change occurred.  Archive latest, then add current as
-			# latest.
-			vlist = jobent['history'] + [hash]
-			latest['_id'] = hash
+	def setlatest(self, jobid, job, hash):
+		self.db.jobs.update({'_id': jobid}, {'$set': {'latest': job}})
+		self.db.jobs.update({'_id': jobid}, {'$set': {'latestid': hash}})
 
-			statelog = JobStates[latest['JobStatus']]
-			if latest['JobStatus'] != job['LastJobStatus']:
-				statelog += ' -> ' + JobStates[job['LastJobStatus']]
-			statelog += ' -> ' + JobStates[job['JobStatus']]
-			print '+ augmenting history on %s (state %s at %s)' % \
-			      (jobid, statelog, tfmt(job['EnteredCurrentStatus']))
-			try:
-				db.snapshots.insert(latest)
-			except pymongo.errors.DuplicateKeyError:
-				pass
-			db.jobs.update({'_id': jobid}, {'$set': {'history': vlist}})
-			db.jobs.update({'_id': jobid}, {'$set': {'latest': job}})
-			db.jobs.update({'_id': jobid}, {'$set': {'latestid': hash}})
+	def addhistory(self, jobid, jobent, job, hash):
+		hist = self.jobhistory(jobid, jobent) + [hash]
 
-	else:
-		# No jobent -> never seen before.  Enter ONLY a jobent, no history.
-		print '+ adding job %s' % jobid
+		try:
+			job['_id'] = hash
+			self.db.snapshots.insert(job)
+		except pymongo.errors.DuplicateKeyError:
+			pass
+		self.db.jobs.update({'_id': jobid}, {'$set': {'history': hist}})
+
+	def addjob(self, jobid, job, hash):
 		jobent = {
 			'_id': jobid,
 			'history': [],
 			'latest': job,
 			'latestid': hash,
 		}
-		db.jobs.insert(jobent)
+		self.db.jobs.insert(jobent)
 
 
 def usage(fp=sys.stderr):
@@ -322,7 +358,6 @@ def main(args):
 		if opt in ('-h', '--help'):
 			return usage()
 
-	conn = pymongo.MongoClient(dbname)
 	if not args:
 		return usage()
 	cmd = args.pop(0)
@@ -344,17 +379,17 @@ def main(args):
 		'end': end,
 	}
 
+	db = CrowMongo(dbname, brand)
+
 	if cmd == 'queue':
-		db = conn['crow_' + brand]
 		if interval is None:
 			interval = 300
 		w = QueueWatcher(interval=interval, hooks=hooks)
 		for snapshot in w:
 			ctx.count += 1
-			update(db, snapshot)
+			db.update(snapshot)
 
 	elif cmd == 'history':
-		db = conn['crow_' + brand]
 		if interval is None:
 			interval = 10
 		if args:
@@ -363,12 +398,12 @@ def main(args):
 				w = HistoryWatcher(arg, interval=None, hooks=hooks)
 				for snapshot in w:
 					ctx.count += 1
-					update(db, snapshot)
+					db.update(snapshot)
 		else:
 			w = HistoryWatcher(DefaultHistoryFile, interval=interval, hooks=hooks)
 			for snapshot in w:
 				ctx.count += 1
-				update(db, snapshot)
+				db.update(snapshot)
 
 
 if __name__ == '__main__':
