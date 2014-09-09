@@ -1,4 +1,4 @@
 crow
 ====
 
-Monitoring toolkit for Condor
+Crow is a monitoring toolkit for Condor.
