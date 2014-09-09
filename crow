@@ -1,0 +1,375 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import time
+import getopt
+
+import pymongo
+import htcondor
+import classad
+
+try:
+	from hashlib import md5
+except ImportError:
+	# py2.4
+	from md5 import md5
+
+# Needs to be in a config file
+DefaultDatabase = 'mongodb://db.mwt2.org:27017'
+DefaultHistoryFile = '/var/lib/condor/spool/history'
+
+JobStates = (
+	'unexpanded',
+	'idle',
+	'running',
+	'removed',
+	'completed',
+	'held',
+	'submission-error',
+)
+
+
+def tfmt(t):
+	return '%.3f (%s)' % (float(t), time.ctime(t))
+
+
+class QueueWatcher(object):
+	'''QueueWatcher creates a relationship to a schedd or collector, so
+	that it can be queried for running jobs.'''
+
+	def __init__(self, schedd=None, collector=None, hooks={}, interval=30):
+		self.hooks = {
+			'begin': lambda w, jobs: True,
+			'end': lambda w: True,
+		}
+		self.hooks.update(hooks)
+		self._interval = interval
+
+		if schedd:
+			if not collector:
+				raise TypeError, 'QueueWatcher with schedd requires collector name also'
+			coll = htcondor.Collector(collector)
+			ad = coll.locate(htcondor.DaemonTypes.Schedd, schedd)
+			self.source = htcondor.Schedd(ad)
+
+		elif collector:
+			self.source = htcondor.Collector(collector)
+
+		else:
+			self.source = htcondor.Schedd()
+
+
+	@staticmethod
+	def stringify(snapshot):
+		'''Ensure that each value in a job snapshot (a dict of
+		classad names and values) is a base type:
+		int, float, bool, or str.'''
+		new = {}
+		for k, v in snapshot.items():
+			if type(v) in (long, float, bool, str):
+				new[k] = v
+			else:
+				new[k] = str(v)
+		return new
+
+
+	def __iter__(self):
+		while True:
+			try:
+				jobs = self.source.query()
+			except Exception, e:
+				print >>sys.stderr, str(e)
+			if self.hooks['begin'](self, jobs) is False:
+				break
+			for job in jobs:
+				try:
+					job = self.stringify(job)
+					yield job
+				except Exception, e:
+					print >>sys.stderr, str(e)
+
+			if self._interval is None:
+				break
+			if self.hooks['end'](self) is False:
+				break
+			time.sleep(self._interval)
+
+
+class HistoryWatcher(object):
+	def __init__(self, file, hooks={}, interval=30):
+		self.hooks = {
+			'begin': lambda w: True,
+			'cycle': lambda w: True,
+			'end': lambda w: True,
+		}
+		self.hooks.update(hooks)
+		self._interval = interval
+		self._file = file
+		self._current = {}
+		self._fp = None
+
+
+	@staticmethod
+	def parsevalue(value):
+		'''Convert a classad value to a string (without quotes), boolean,
+		int, or float as appropriate.'''
+		if value.startswith('"'):
+			return value.strip('"')
+
+		if value == 'true':
+			return True
+
+		if value == 'false':
+			return False
+
+		if '.' in value:
+			try:
+				return float(value)
+			except ValueError:
+				pass
+
+		try:
+			return int(value)
+		except ValueError:
+			pass
+
+		return value
+
+
+	def read(self):
+		# This lets us catch updates to the current file
+		self._fp.seek(self._fp.tell())
+
+		recs = []
+		for line in self._fp:
+			if line.startswith('***'):
+				# end of record
+				yield self._current
+				self._current = {}
+				continue
+
+			ad, value = line.strip().split(' = ', 1)
+			self._current[ad] = self.parsevalue(value)
+
+
+	def __iter__(self):
+		s = os.stat(self._file)
+		inode = s.st_ino
+		self._fp = None
+
+		# Wait for history file to become available
+		while not self._fp:
+			try:
+				self._fp = open(self._file, 'r')
+				break
+			except OSError:
+				if self._interval is None:
+					return
+			time.sleep(self._interval)
+
+		# history file now exists, and is open
+
+		s = None
+		while True:
+			# Check whether history file has cycled (but only if we are looping)
+			if self._interval is not None:
+				try:
+					s = os.stat(self._file)
+				except OSError:
+					# old file moved, but no new file yet
+					s = None
+					self._fp.close()
+					self._fp = None
+					time.sleep(self._interval)
+					continue
+
+			# File exists
+			if s and s.st_ino != inode:
+				# Old file moved, and new history file available
+				if self.hooks['cycle'](self) is False:
+					break
+				inode = s.st_ino
+				self._fp.close()
+				self._fp = open(self._file, 'r')
+
+			# Ready to read current file
+			if self._fp:
+				if self.hooks['begin'](self) is False:
+					break
+				for snapshot in self.read():
+					yield snapshot
+
+			if self._fp and self.hooks['end'](self) is False:
+				break
+
+			if self._interval is None:
+				self._fp.close()
+				break
+
+			sys.stdout.flush()
+			time.sleep(self._interval)
+
+
+# Compute a unique identifier for an instantaneous job state
+# by hashing each classad value (ordered by sorted classad names).
+# This will be used to determine whether we already know about this
+# exact job state or "version".
+def jobhash(rec):
+	m = md5()
+	for k in sorted(filter(lambda k: not k.startswith('_'), rec.keys())):
+		m.update(str(rec[k]))
+	return m.hexdigest()[:16]
+
+
+# Given a job description (snapshot), ensure that the job is up to
+# date in the database by updating or inserting records as needed.
+def update(db, job):
+	jobid = job['GlobalJobId']
+	hash = jobhash(job)
+
+	# Is this jobid in db?  If not we will add it below.
+	# A jobent record has three keys:
+	#   _id: the GlobalJobId from condor classads
+	#   snapshots: a list of valid snapshot ids
+	#   latest: the most recent snapshot stored
+	#           (** not necessarily the most recent observed **)
+	#   latestid: the snapshot id (hash) of latest
+	jobent = db.jobs.find_one({"_id": jobid})
+	if jobent:
+		# Already present.  Check for significant changes.
+		# Latest is a full job snapshot, not a reference.
+		latest = jobent['latest']
+		lhash = jobent['latestid']
+
+		# This is odd: condor history gives two 'EnteredCurrentStatus' values.
+		# I don't think it's a problem so long as the later one is second in
+		# the history file.  (It will overwrite the prior when creating dicts.)
+		# If this turns out problematic, we can add logic to choose the better
+		# value; in most cases it will be the larger number.
+
+		if hash == lhash:
+			# No changes whatsoever.
+			print '+ no change to %s' % jobid
+
+		elif latest['EnteredCurrentStatus'] == job['EnteredCurrentStatus']:
+			# No change of state.  Simply update latest.
+			print '+ updating %s to latest' % jobid
+			db.jobs.update({'_id': jobid}, {'$set': {'latest': job}})
+			db.jobs.update({'_id': jobid}, {'$set': {'latestid': hash}})
+
+		else:
+			# State change occurred.  Archive latest, then add current as
+			# latest.
+			vlist = jobent['history'] + [hash]
+			latest['_id'] = hash
+
+			statelog = JobStates[latest['JobStatus']]
+			if latest['JobStatus'] != job['LastJobStatus']:
+				statelog += ' -> ' + JobStates[job['LastJobStatus']]
+			statelog += ' -> ' + JobStates[job['JobStatus']]
+			print '+ augmenting history on %s (state %s at %s)' % \
+			      (jobid, statelog, tfmt(job['EnteredCurrentStatus']))
+			try:
+				db.snapshots.insert(latest)
+			except pymongo.errors.DuplicateKeyError:
+				pass
+			db.jobs.update({'_id': jobid}, {'$set': {'history': vlist}})
+			db.jobs.update({'_id': jobid}, {'$set': {'latest': job}})
+			db.jobs.update({'_id': jobid}, {'$set': {'latestid': hash}})
+
+	else:
+		# No jobent -> never seen before.  Enter ONLY a jobent, no history.
+		print '+ adding job %s' % jobid
+		jobent = {
+			'_id': jobid,
+			'history': [],
+			'latest': job,
+			'latestid': hash,
+		}
+		db.jobs.insert(jobent)
+
+
+def usage(fp=sys.stderr):
+	p = os.path.basename(sys.argv[0])
+	print >>fp, 'usage: %s [-d|--database database-uri] [-b|--brand brand] command [args...]' % p
+	print >>fp, '       %s [opts] [-i|--interval interval] queue' % p
+	print >>fp, '       %s [opts] [-i|--interval interval] history [historyfile ...]' % p
+	return 2
+
+
+def main(args):
+	class context(object): pass
+
+	try:
+		opts, args = getopt.getopt(args, 'hd:b:i:', ['help', 'database=', 'brand=', 'interval='])
+	except getopt.GetoptError, e:
+		print >>sys.stderr, str(e)
+		print >>sys.stderr
+		return usage()
+
+	dbname = DefaultDatabase
+	brand = 'generic'
+	interval = None
+
+	for opt, arg in opts:
+		if opt in ('-d', '--database'):
+			dbname = arg
+		if opt in ('-b', '--brand'):
+			brand = arg
+		if opt in ('-i', '--interval'):
+			interval = int(arg)
+		if opt in ('-h', '--help'):
+			return usage()
+
+	conn = pymongo.MongoClient(dbname)
+	if not args:
+		return usage()
+	cmd = args.pop(0)
+
+	ctx = context()
+	def begin(*args):
+		ctx.count = 0
+		print '** starting scan (%s)' % (tfmt(time.time()))
+		sys.stdout.flush()
+	def cycle(*args):
+		print '** cycled (%s)' % (tfmt(time.time()))
+	def end(*args):
+		print '-- %d jobs processed (%s)' % (ctx.count, tfmt(time.time()))
+		sys.stdout.flush()
+
+	hooks = {
+		'begin': begin,
+		'cycle': cycle,
+		'end': end,
+	}
+
+	if cmd == 'queue':
+		db = conn['crow_' + brand]
+		if interval is None:
+			interval = 300
+		w = QueueWatcher(interval=interval, hooks=hooks)
+		for snapshot in w:
+			ctx.count += 1
+			update(db, snapshot)
+
+	elif cmd == 'history':
+		db = conn['crow_' + brand]
+		if interval is None:
+			interval = 10
+		if args:
+			for arg in args:
+				# Given args, do a one-time pass over each named file
+				w = HistoryWatcher(arg, interval=None, hooks=hooks)
+				for snapshot in w:
+					ctx.count += 1
+					update(db, snapshot)
+		else:
+			w = HistoryWatcher(DefaultHistoryFile, interval=interval, hooks=hooks)
+			for snapshot in w:
+				ctx.count += 1
+				update(db, snapshot)
+
+
+if __name__ == '__main__':
+	sys.exit(main(sys.argv[1:]))

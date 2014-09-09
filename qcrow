@@ -1,0 +1,23 @@
+#!/bin/sh
+
+usage () {
+	p=$(basename "$0")
+	echo >&2 "usage: $0 brand"
+}
+
+case "$1" in
+	-*)	usage; exit 2;;
+	"")	usage; exit 2;;
+	*)	: ;;
+esac
+
+/usr/bin/mongo db.mwt2.org/crow_${1} <<'EOF'
+print('job records: ' + db.jobs.count())
+print('snapshot records: ' + db.snapshots.count())
+print('jobs with >1 version: ' + db.jobs.find({'snapshots.0': {$exists: true}}).count())
+var snapshots = db.jobs.aggregate({$project: {history: 1}},
+                                  {$unwind: '$history'},
+                                  {$group: {_id: 'total', count: {$sum: 1}}})
+print('snapshots referenced: ' +  snapshots.result[0]['count'])
+print('database size: ' + db.stats(1024*1024)['fileSize'] + ' MB')
+EOF
