@@ -1,11 +1,11 @@
 Name:		crow
-Version:	0140909giteaf502d
+Version:  20140909git8e27bd0
 Release:	1%{?dist}
 Summary: Crow is a monitoring toolkit for HTCondor
 Group:	 System Environment/Daemons
 License: MIT
 URL:	   https://github.com/DHTC-Tools/crow	
-Source0:	%{name}.20140909giteaf502d.tar.gz
+Source0:	%{name}.20140909git8e27bd0.tar.gz
 BuildRoot:	%(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 BuildArch: noarch
 Requires: pymongo condor
@@ -22,13 +22,12 @@ Crow is a monitoring toolkit for HTCondor
 %build
 
 %install
-# this is all very weird and probably very wrong
-rm -rf %{buildroot}
+ls -lha
 mkdir -p %{buildroot}%{_bindir}
-mkdir -p %{buildroot}%{_defaultdocdir}/%{name}-%{version}
 mv crow %{buildroot}%{_bindir}
 mv qcrow %{buildroot}%{_bindir}
-mv README.md LICENSE %{buildroot}%{_defaultdocdir}/%{name}-%{version}
+mv etc/init.d/crow %{buildroot}%{_initddir}
+mv etc/sysconfig/crow %{_sysconfdir}/sysconfig/crow
 
 %clean
 rm -rf %{buildroot}
@@ -36,13 +35,13 @@ rm -rf %{buildroot}
 
 %files
 %defattr(-,root,root,-)
+%doc README.md LICENSE
 %{_bindir}/crow
 %{_bindir}/qcrow
-%{_defaultdocdir}/%{name}-%{version}/README.md
-%{_defaultdocdir}/%{name}-%{version}/LICENSE
-
+%{_initddir}/crow
+%{_sysconfdir}/sysconfig/crow
 
 
 %changelog
 * Tue Sep 09 2014 Lincoln Bryant <lincolnb@hep.uchicago.edu>
-- Really weird first build
+- First official build with init script et cetera.
