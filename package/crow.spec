@@ -1,24 +1,16 @@
 Name:		crow
 Version:	0140909giteaf502d
-Release:	0%{?dist}
+Release:	1%{?dist}
 Summary: Crow is a monitoring toolkit for HTCondor
-
 Group:	 System Environment/Daemons
 License: MIT
 URL:	   https://github.com/DHTC-Tools/crow	
 Source0:	%{name}.20140909giteaf502d.tar.gz
 BuildRoot:	%(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
-
 BuildArch: noarch
-
-%if 0%{?el5}
-BuildRequires: pymongo
 Requires: pymongo condor
-%endif
-%if 0%{?el6}
-#osg release will need condor-classads
-BuildRequires: python-pymongo condor 
-Requires: python-pymongo condor 
+%if 0%{?rhel} > 5
+Requires: python-pymongo condor
 %endif
 
 %description
