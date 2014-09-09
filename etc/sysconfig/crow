@@ -1,0 +1,13 @@
+# /etc/sysconfig/crow
+#
+# Arguments to pass to the Crow daemon, parsed by the sysv init script.
+
+# Unique identifier for this instance in the database. Follows MongoDB naming
+# conventions, i.e. use underscores instead of dashes, dots, or spaces.
+BRAND="mybrand"
+
+# Controls tracking HTCondor history files (completed jobs), defaults to yes
+#HISTORY=yes
+
+# Controls tracking the HTCondor queue (all other jobs), defaults to yes
+#QUEUE=yes
