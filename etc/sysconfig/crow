@@ -1,5 +1,8 @@
 # /etc/sysconfig/crow
 #
+# !! this file is currently unused !!
+# !! this file is currently unused !!
+# !! this file is currently unused !!
 # Arguments to pass to the Crow daemon, parsed by the sysv init script.
 
 # Unique identifier for this instance in the database. Follows MongoDB naming
