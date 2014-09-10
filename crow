@@ -20,6 +20,8 @@ DefaultConfig = '''
 [crow]
 brand = generic
 debug = false
+historyinterval = 30
+queueinterval = 60
 
 [db]
 server = mongodb://db.mwt2.org:27017
@@ -491,8 +493,8 @@ def main(args):
 
 	dbserver = cfg.get('db', 'server')
 	brand = cfg.get('crow', 'brand')
-	debug = cfg.get('crow', 'debug')
-	interval = None
+	debug = cfg.getboolean('crow', 'debug')
+	_interval = None
 
 	for opt, arg in opts:
 		if opt in ('-C', '--configfile'):
@@ -504,7 +506,7 @@ def main(args):
 		if opt in ('-b', '--brand'):
 			brand = arg
 		if opt in ('-i', '--interval'):
-			interval = int(arg)
+			_interval = int(arg)
 		if opt in ('-h', '--help'):
 			return usage()
 
@@ -541,8 +543,7 @@ def main(args):
 		cfg.write(sys.stdout)
 
 	elif cmd == 'queue':
-		if interval is None:
-			interval = 300
+		interval = _interval or cfg.getint('crow', 'queueinterval')
 		w = QueueWatcher(interval=interval, hooks=hooks)
 		for snapshot in w:
 			snapshot = adfilter(snapshot)
@@ -550,8 +551,7 @@ def main(args):
 			db.update(snapshot)
 
 	elif cmd == 'history':
-		if interval is None:
-			interval = 10
+		interval = _interval or cfg.getint('crow', 'historyinterval')
 		if args:
 			for arg in args:
 				# Given args, do a one-time pass over each named file
