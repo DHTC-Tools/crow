@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import getopt
+import ConfigParser
 
 import pymongo
 import htcondor
@@ -15,9 +16,19 @@ except ImportError:
 	# py2.4
 	from md5 import md5
 
-# Needs to be in a config file
-DefaultDatabase = 'mongodb://db.mwt2.org:27017'
-DefaultHistoryFile = '/var/lib/condor/spool/history'
+DefaultConfig = '''
+[crow]
+brand = generic
+
+[db]
+server = mongodb://db.mwt2.org:27017
+database = crow_%(brand)s
+
+[condor]
+historyfile = /var/lib/condor/spool/history
+excludeads = 
+includeads =
+'''
 
 JobStates = (
 	'unexpanded',
@@ -28,6 +39,10 @@ JobStates = (
 	'held',
 	'submission-error',
 )
+
+class Config(ConfigParser.RawConfigParser):
+	def getlist(self, section, option):
+		return [x.strip() for x in self.get(section, option).split(',')]
 
 
 def tfmt(t):
@@ -279,12 +294,12 @@ class CrowMongo(CrowDB):
 	'''Implements a MongoDB store for job history that follows the
 	common update logic in CrowDB above.'''
 
-	def __init__(self, addr, name, prefix='crow_'):
+	def __init__(self, addr, dbname):
 		try:
 			conn = pymongo.MongoClient(addr)
 		except AttributeError:
 			conn = pymongo.Connection(addr)
-		self.db = conn[prefix + name]
+		self.db = conn[dbname]
 
 	# A jobent record has three keys:
 	#   _id: the GlobalJobId from condor classads
@@ -336,20 +351,36 @@ def usage(fp=sys.stderr):
 
 def main(args):
 	class context(object): pass
+	cfg = Config()
+
+	# Create config using defaults above
+	import StringIO
+	fp = StringIO.StringIO(DefaultConfig)
+	cfg.readfp(fp)
+	fp.close()
+
+	# Read .ini file from relative to $0
+	base = os.path.basename(sys.argv[0])
+	home = os.path.dirname(sys.argv[0])
+	if os.path.split(home)[-1] == 'bin':
+		home = os.path.join(*os.path.split(home)[:-1])
+		cfg.read(os.path.join(home, 'etc', base + '.ini'))
 
 	try:
-		opts, args = getopt.getopt(args, 'hd:b:i:', ['help', 'database=', 'brand=', 'interval='])
+		opts, args = getopt.getopt(args, 'hC:d:b:i:', ['help', 'config=', 'database=', 'brand=', 'interval='])
 	except getopt.GetoptError, e:
 		print >>sys.stderr, str(e)
 		print >>sys.stderr
 		return usage()
 
-	dbname = DefaultDatabase
-	brand = 'generic'
+	dbserver = cfg.get('db', 'server')
+	brand = cfg.get('crow', 'brand')
 	interval = None
 
 	for opt, arg in opts:
-		if opt in ('-d', '--database'):
+		if opt in ('-C', '--configfile'):
+			cfg.read(arg)
+		if opt in ('-d', '--dbserver'):
 			dbname = arg
 		if opt in ('-b', '--brand'):
 			brand = arg
@@ -379,9 +410,13 @@ def main(args):
 		'end': end,
 	}
 
-	db = CrowMongo(dbname, brand)
+	dbname = cfg.get('db', 'database') % locals()
+	db = CrowMongo(dbserver, dbname)
 
-	if cmd == 'queue':
+	if cmd == 'printconf':
+		cfg.write(sys.stdout)
+
+	elif cmd == 'queue':
 		if interval is None:
 			interval = 300
 		w = QueueWatcher(interval=interval, hooks=hooks)
@@ -400,7 +435,8 @@ def main(args):
 					ctx.count += 1
 					db.update(snapshot)
 		else:
-			w = HistoryWatcher(DefaultHistoryFile, interval=interval, hooks=hooks)
+			file = cfg.get('condor', 'historyfile')
+			w = HistoryWatcher(file, interval=interval, hooks=hooks)
 			for snapshot in w:
 				ctx.count += 1
 				db.update(snapshot)
