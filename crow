@@ -19,6 +19,7 @@ except ImportError:
 DefaultConfig = '''
 [crow]
 brand = generic
+debug = false
 
 [db]
 server = mongodb://db.mwt2.org:27017
@@ -26,8 +27,9 @@ database = crow_%(brand)s
 
 [condor]
 historyfile = /var/lib/condor/spool/history
-excludeads = 
-includeads =
+# This adfilter will accept all classads. Use a Matcher expression
+# to exclude or include classads by name.
+adfilter = /.*/
 '''
 
 JobStates = (
@@ -341,9 +343,123 @@ class CrowMongo(CrowDB):
 		self.db.jobs.insert(jobent)
 
 
+class CrowDebug(CrowDB):
+	def update(self, job):
+		print job['GlobalJobId'], '(%d classads)' % len(job.keys())
+
+
+##### Lifted from tanglib
+import re
+import fnmatch
+
+class Matcher(list):
+	OR = 1
+	AND = 2
+	NOT = 3
+
+	@staticmethod
+	def matchfunc(expr):
+		negate = False
+		negstr = ['!', '']
+
+		if expr.startswith('!'):
+			negate = True
+			expr = expr[1:].strip()
+
+		if expr.startswith('/') and expr.endswith('/'):
+			expr = expr[1:-1]
+			rx = re.compile(expr, re.I)
+			f = lambda x: negate ^ bool(rx.search(x))
+			f.desc = negstr[negate] + 're(' + expr + ')'
+
+		elif '*' in expr or '?' in expr or '[' in expr:
+			f = lambda x: negate ^ bool(fnmatch.fnmatch(x, expr))
+			f.desc = negstr[negate] + 'fnmatch(' + expr + ')'
+
+		else:
+			f = lambda x: negate ^ (x.lower() == expr.lower())
+			f.desc = negstr[negate] + 'str(' + expr + ')'
+
+		return f
+
+
+	def _selector(self, expr):
+		expr = expr.strip()
+		if expr.lower() == 'or':
+			yield self.OR
+			return
+		if expr.lower() == 'and':
+			yield self.AND
+			return
+		if expr.lower() == 'not':
+			yield self.NOT
+			return
+
+		yield self.matchfunc(expr)
+		return
+
+
+	def __init__(self, exprs, **kwargs):
+		selectors = []
+		for expr in exprs:
+			for sel in self._selector(expr):
+				selectors.append(sel)
+		list.__init__(self, selectors)
+
+	def describe(self):
+		desc = ''
+		for item in self:
+			if item == self.OR:
+				desc += ' or'
+			elif item == self.AND:
+				desc += ' and'
+			elif item == self.NOT:
+				desc += ' not'
+			else:
+				desc += ' ' + item.desc
+		return desc.strip()
+
+	def _run(self, key):
+		match = []
+		for selector in self:
+			if selector == self.AND:
+				r = match[-2] and match[-1]
+				match = match[:-2] + [r]
+			elif selector == self.OR:
+				r = match[-2] or match[-1]
+				match = match[:-2] + [r]
+			elif selector == self.NOT:
+				match[-1] = not match[-1]
+			else:
+				match.append(selector(key))
+		return match[-1]
+
+	def __call__(self, args, key=lambda x: x):
+		stack = []
+		return [arg for arg in args if self._run(key(arg))]
+
+	def __contains__(self, other):
+		return self._run(other)
+##### End of snitch from tanglib
+
+
+class JobFilter(object):
+	def __init__(self, rule):
+		self.matcher = Matcher(rule.split(' '))
+
+	def __call__(self, job):
+		new = {}
+		for key in self.matcher(job.keys()):
+			new[key] = job[key]
+		return new
+
+
 def usage(fp=sys.stderr):
 	p = os.path.basename(sys.argv[0])
-	print >>fp, 'usage: %s [-d|--database database-uri] [-b|--brand brand] command [args...]' % p
+	s = ' ' * len(p)
+	print >>fp, 'usage: %s [-D|--debug] [-C|--configfile file]' % p
+	print >>fp, '       %s [-d|--database database-uri] [-b|--brand brand]' % s
+	print >>fp, '       %s command [args...]' % s
 	print >>fp, '       %s [opts] [-i|--interval interval] queue' % p
 	print >>fp, '       %s [opts] [-i|--interval interval] history [historyfile ...]' % p
 	return 2
@@ -367,7 +483,7 @@ def main(args):
 		cfg.read(os.path.join(home, 'etc', base + '.ini'))
 
 	try:
-		opts, args = getopt.getopt(args, 'hC:d:b:i:', ['help', 'config=', 'database=', 'brand=', 'interval='])
+		opts, args = getopt.getopt(args, 'hDC:d:b:i:', ['help', 'debug', 'config=', 'database=', 'brand=', 'interval='])
 	except getopt.GetoptError, e:
 		print >>sys.stderr, str(e)
 		print >>sys.stderr
@@ -375,11 +491,14 @@ def main(args):
 
 	dbserver = cfg.get('db', 'server')
 	brand = cfg.get('crow', 'brand')
+	debug = cfg.get('crow', 'debug')
 	interval = None
 
 	for opt, arg in opts:
 		if opt in ('-C', '--configfile'):
 			cfg.read(arg)
+		if opt in ('-D', '--debug'):
+			debug = True
 		if opt in ('-d', '--dbserver'):
 			dbname = arg
 		if opt in ('-b', '--brand'):
@@ -411,7 +530,12 @@ def main(args):
 	}
 
 	dbname = cfg.get('db', 'database') % locals()
-	db = CrowMongo(dbserver, dbname)
+	if debug:
+		db = CrowDebug()
+	else:
+		db = CrowMongo(dbserver, dbname)
+
+	adfilter = JobFilter(cfg.get('condor', 'adfilter') + ' GlobalJobId or')
 
 	if cmd == 'printconf':
 		cfg.write(sys.stdout)
@@ -421,6 +545,7 @@ def main(args):
 			interval = 300
 		w = QueueWatcher(interval=interval, hooks=hooks)
 		for snapshot in w:
+			snapshot = adfilter(snapshot)
 			ctx.count += 1
 			db.update(snapshot)
 
@@ -432,12 +557,14 @@ def main(args):
 				# Given args, do a one-time pass over each named file
 				w = HistoryWatcher(arg, interval=None, hooks=hooks)
 				for snapshot in w:
+					snapshot = adfilter(snapshot)
 					ctx.count += 1
 					db.update(snapshot)
 		else:
 			file = cfg.get('condor', 'historyfile')
 			w = HistoryWatcher(file, interval=interval, hooks=hooks)
 			for snapshot in w:
+				snapshot = adfilter(snapshot)
 				ctx.count += 1
 				db.update(snapshot)
 
