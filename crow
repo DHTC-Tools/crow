@@ -20,6 +20,7 @@ DefaultConfig = '''
 [crow]
 brand = generic
 debug = false
+detach = false
 historyinterval = 30
 queueinterval = 60
 
@@ -461,7 +462,7 @@ def usage(fp=sys.stderr):
 	s = ' ' * len(p)
 	print >>fp, 'usage: %s [-D|--debug] [-C|--configfile file]' % p
 	print >>fp, '       %s [-d|--database database-uri] [-b|--brand brand]' % s
-	print >>fp, '       %s command [args...]' % s
+	print >>fp, '       %s [--detach] command [args...]' % s
 	print >>fp, '       %s [opts] [-i|--interval interval] queue' % p
 	print >>fp, '       %s [opts] [-i|--interval interval] history [historyfile ...]' % p
 	return 2
@@ -498,6 +499,7 @@ def main(args):
 	dbserver = cfg.get('db', 'server')
 	brand = cfg.get('crow', 'brand')
 	debug = cfg.getboolean('crow', 'debug')
+	detach = cfg.getboolean('crow', 'detach')
 	_interval = None
 
 	for opt, arg in opts:
@@ -505,6 +507,8 @@ def main(args):
 			debug = True
 		if opt in ('-d', '--dbserver'):
 			dbname = arg
+		if opt in ('--detach',):
+			detach = True
 		if opt in ('-b', '--brand'):
 			brand = arg
 		if opt in ('-i', '--interval'):
@@ -542,18 +546,16 @@ def main(args):
 
 	adfilter = JobFilter(cfg.get('condor', 'adfilter') + ' GlobalJobId or')
 
-	if cmd == 'printconf':
-		cfg.write(sys.stdout)
-
-	elif cmd == 'queue':
+	def queue(args):
 		interval = _interval or cfg.getint('crow', 'queueinterval')
 		w = QueueWatcher(interval=interval, hooks=hooks)
 		for snapshot in w:
 			snapshot = adfilter(snapshot)
 			ctx.count += 1
 			db.update(snapshot)
+		return 0
 
-	elif cmd == 'history':
+	def history(args):
 		interval = _interval or cfg.getint('crow', 'historyinterval')
 		if args:
 			for arg in args:
@@ -570,7 +572,28 @@ def main(args):
 				snapshot = adfilter(snapshot)
 				ctx.count += 1
 				db.update(snapshot)
+		return 0
 
+	if cmd == 'printconf':
+		cfg.write(sys.stdout)
+	elif cmd == 'queue':
+		queue(args)
+	elif cmd == 'history':
+		history(args)
+	elif cmd == 'all':
+		# this will be recommended, but not yet -
+		# we need better logging control first. Also better
+		# KeyboardInterrupt handling.
+		pid1 = os.fork()
+		if pid1 == 0:
+			return queue(args)
+		pid2 = os.fork()
+		if pid2 == 0:
+			return history(args)
+		if not detach:
+			os.waitpid(pid1)
+			os.waitpid(pid2)
+			return 0
 
 if __name__ == '__main__':
 	sys.exit(main(sys.argv[1:]))
