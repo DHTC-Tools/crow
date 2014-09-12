@@ -491,14 +491,16 @@ def main(args):
 		print >>sys.stderr
 		return usage()
 
+	for opt, arg in opts:
+		if opt in ('-C', '--config'):
+			cfg.read(arg)
+
 	dbserver = cfg.get('db', 'server')
 	brand = cfg.get('crow', 'brand')
 	debug = cfg.getboolean('crow', 'debug')
 	_interval = None
 
 	for opt, arg in opts:
-		if opt in ('-C', '--configfile'):
-			cfg.read(arg)
 		if opt in ('-D', '--debug'):
 			debug = True
 		if opt in ('-d', '--dbserver'):
@@ -532,6 +534,7 @@ def main(args):
 	}
 
 	dbname = cfg.get('db', 'database') % locals()
+
 	if debug:
 		db = CrowDebug()
 	else:
