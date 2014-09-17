@@ -33,7 +33,7 @@ cp -p crow %{buildroot}%{_bindir}
 cp -p qcrow %{buildroot}%{_bindir}
 cp -p README.md LICENSE %{buildroot}%{_defaultdocdir}/%{name}-%{version}
 cp -p etc/sysconfig %{buildroot}%{_sysconfdir}/sysconfig/crow
-cp -p etc/crow.ini %{buildroot}%{_sysconfdir}/crow.ini.example
+cp -p etc/crow.ini %{buildroot}%{_sysconfdir}/crow.ini
 cp -p etc/initcrow %{buildroot}%{_sysconfdir}/init.d/crow
 
 %clean
@@ -46,8 +46,8 @@ rm -rf %{buildroot}
 %{_bindir}/qcrow
 %{_defaultdocdir}/%{name}-%{version}/README.md
 %{_defaultdocdir}/%{name}-%{version}/LICENSE
-%{_sysconfdir}/sysconfig/crow
-%{_sysconfdir}/crow.ini.example
+%config %{_sysconfdir}/sysconfig/crow
+%config %{_sysconfdir}/crow.ini
 %{_sysconfdir}/init.d/crow
 
 
