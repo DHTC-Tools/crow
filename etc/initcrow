@@ -38,7 +38,7 @@ start () {
 stop () {
 	for mode in history queue; do
 		what="$prog $mode"
-		lockfile=$(echo "$what" | tr ' ' _)
+		lockfile=$lockdir/$(echo "$what" | tr ' ' _)
 		if [ -f $lockfile ]; then
 			echo -n $"Stopping $what: "
 			kill $(cat $lockfile) && echo ok && rm -f $lockfile
