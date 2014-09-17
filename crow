@@ -484,7 +484,8 @@ def main(args):
 	if os.path.split(home)[-1] == 'bin':
 		home = os.path.join(*os.path.split(home)[:-1])
 
-	for path in (home, 'etc', base + '.ini'), (base + '.ini',):
+	file = base + '.ini'
+	for path in ('/etc', file), (home, 'etc', file), (home, file):
 		file = os.path.join(*path)
 		#print 'Trying %s ...' % file
 		cfg.read(file)
