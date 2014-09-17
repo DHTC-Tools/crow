@@ -483,7 +483,11 @@ def main(args):
 	home = os.path.dirname(sys.argv[0])
 	if os.path.split(home)[-1] == 'bin':
 		home = os.path.join(*os.path.split(home)[:-1])
-		cfg.read(os.path.join(home, 'etc', base + '.ini'))
+
+	for path in (home, 'etc', base + '.ini'), (base + '.ini',):
+		file = os.path.join(*path)
+		#print 'Trying %s ...' % file
+		cfg.read(file)
 
 	try:
 		opts, args = getopt.getopt(args, 'hDC:d:b:i:', ['help', 'debug', 'config=', 'database=', 'brand=', 'interval='])
@@ -594,6 +598,9 @@ def main(args):
 			os.waitpid(pid1)
 			os.waitpid(pid2)
 			return 0
+	else:
+		print >>sys.stderr, 'unknown command:', cmd
+		return usage()
 
 if __name__ == '__main__':
 	sys.exit(main(sys.argv[1:]))
