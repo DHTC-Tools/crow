@@ -43,6 +43,7 @@ JobStates = (
 	'completed',
 	'held',
 	'submission-error',
+	'suspended',
 )
 
 class Config(ConfigParser.RawConfigParser):
