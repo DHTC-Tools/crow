@@ -25,16 +25,16 @@ Crow is a monitoring toolkit for HTCondor
 # this is all very weird and probably very wrong
 rm -rf %{buildroot}
 mkdir -p %{buildroot}%{_bindir}
-mkdir -p %{buildroot}%{_etcdir}
-mkdir -p %{buildroot}%{_etcdir}/sysconfig
-mkdir -p %{buildroot}%{_etcdir}/init.d
+mkdir -p %{buildroot}%{_sysconfdir}
+mkdir -p %{buildroot}%{_sysconfdir}/sysconfig
+mkdir -p %{buildroot}%{_sysconfdir}/init.d
 mkdir -p %{buildroot}%{_defaultdocdir}/%{name}-%{version}
 cp -p crow %{buildroot}%{_bindir}
 cp -p qcrow %{buildroot}%{_bindir}
 cp -p README.md LICENSE %{buildroot}%{_defaultdocdir}/%{name}-%{version}
-cp -p etc/sysconfig %{buildroot}%{_etcdir}/sysconfig/crow
-cp -p etc/crow.ini %{buildroot}%{_etcdir}/crow.ini.example
-cp -p etc/initcrow %{buildroot}%{_etcdir}/init.d/crow
+cp -p etc/sysconfig %{buildroot}%{_sysconfdir}/sysconfig/crow
+cp -p etc/crow.ini %{buildroot}%{_sysconfdir}/crow.ini.example
+cp -p etc/initcrow %{buildroot}%{_sysconfdir}/init.d/crow
 
 %clean
 rm -rf %{buildroot}
@@ -46,9 +46,9 @@ rm -rf %{buildroot}
 %{_bindir}/qcrow
 %{_defaultdocdir}/%{name}-%{version}/README.md
 %{_defaultdocdir}/%{name}-%{version}/LICENSE
-%{_etcdir}/sysconfig/crow
-%{_etcdir}/crow.ini.example
-%{_etcdir}/init.d/crow
+%{_sysconfdir}/sysconfig/crow
+%{_sysconfdir}/crow.ini.example
+%{_sysconfdir}/init.d/crow
 
 
 
