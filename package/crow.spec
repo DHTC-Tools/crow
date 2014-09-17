@@ -1,5 +1,5 @@
 Name:		crow
-Version:	20140917gitfcb9db
+Version:	20140917gitHEAD
 Release:	1%{?dist}
 Summary: Crow is a monitoring toolkit for HTCondor
 Group:	 System Environment/Daemons
@@ -25,10 +25,16 @@ Crow is a monitoring toolkit for HTCondor
 # this is all very weird and probably very wrong
 rm -rf %{buildroot}
 mkdir -p %{buildroot}%{_bindir}
+mkdir -p %{buildroot}%{_etcdir}
+mkdir -p %{buildroot}%{_etcdir}/sysconfig
+mkdir -p %{buildroot}%{_etcdir}/init.d
 mkdir -p %{buildroot}%{_defaultdocdir}/%{name}-%{version}
-mv crow %{buildroot}%{_bindir}
-mv qcrow %{buildroot}%{_bindir}
-mv README.md LICENSE %{buildroot}%{_defaultdocdir}/%{name}-%{version}
+cp -p crow %{buildroot}%{_bindir}
+cp -p qcrow %{buildroot}%{_bindir}
+cp -p README.md LICENSE %{buildroot}%{_defaultdocdir}/%{name}-%{version}
+cp -p etc/sysconfig %{buildroot}%{_etcdir}/sysconfig/crow
+cp -p etc/crow.ini %{buildroot}%{_etcdir}/crow.ini.example
+cp -p etc/initcrow %{buildroot}%{_etcdir}/init.d/crow
 
 %clean
 rm -rf %{buildroot}
@@ -40,6 +46,9 @@ rm -rf %{buildroot}
 %{_bindir}/qcrow
 %{_defaultdocdir}/%{name}-%{version}/README.md
 %{_defaultdocdir}/%{name}-%{version}/LICENSE
+%{_etcdir}/sysconfig/crow
+%{_etcdir}/crow.ini.example
+%{_etcdir}/init.d/crow
 
 
 
