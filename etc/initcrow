@@ -1,4 +1,8 @@
 #!/bin/bash
+#
+# chkconfig: 2345 90 60
+#
+
 # source the function lib
 . /etc/init.d/functions
 
