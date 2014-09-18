@@ -191,44 +191,35 @@ class HistoryWatcher(object):
 
 
 	def __iter__(self):
-		s = os.stat(self._file)
-		inode = s.st_ino
-		self._fp = None
-
 		# Wait for history file to become available
 		while not self._fp:
 			try:
+				s = os.stat(self._file)
+				inode = s.st_ino
 				self._fp = open(self._file, 'r')
-				break
 			except OSError:
+				self._fp = None
 				if self._interval is None:
 					return
-			time.sleep(self._interval)
+				time.sleep(self._interval)
 
 		# history file now exists, and is open
 
 		s = None
 		while True:
-			# Check whether history file has cycled (but only if we are looping)
-			if self._interval is not None:
-				try:
-					s = os.stat(self._file)
-				except OSError:
-					# old file moved, but no new file yet
-					s = None
+			# Make sure history file still exists
+			try:
+				s = os.stat(self._file)
+			except OSError:
+				# no file (yet?)
+				s = None
+			if not s and self._interval is not None:
+				if self._fp:
 					self._fp.close()
 					self._fp = None
+				if not s:
 					time.sleep(self._interval)
 					continue
-
-			# File exists
-			if s and s.st_ino != inode:
-				# Old file moved, and new history file available
-				if self.hooks['cycle'](self) is False:
-					break
-				inode = s.st_ino
-				self._fp.close()
-				self._fp = open(self._file, 'r')
 
 			# Ready to read current file
 			if self._fp:
@@ -245,7 +236,19 @@ class HistoryWatcher(object):
 				break
 
 			sys.stdout.flush()
-			time.sleep(self._interval)
+
+			# Check whether history file has cycled
+			if s and s.st_ino != inode:
+				# Old file moved, and new history file available
+				if self.hooks['cycle'](self) is False:
+					break
+				inode = s.st_ino
+				self._fp.close()
+				self._fp = open(self._file, 'r')
+				# no interval delay if file cycles - scan new one immediately
+
+			else:
+				time.sleep(self._interval)
 
 
 
