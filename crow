@@ -367,8 +367,12 @@ class CrowMongo(CrowDB):
 
 
 class CrowDebug(CrowDB):
+	def __init__(self, *args):
+		self.pprint = __import__('pprint')
+
 	def update(self, job):
 		print job['GlobalJobId'], '(%d classads)' % len(job.keys())
+		print self.pprint.pformat(job)
 
 
 ##### Lifted from tanglib
@@ -466,7 +470,29 @@ class Matcher(list):
 ##### End of snitch from tanglib
 
 
-class JobFilter(object):
+class preparsed(object):
+	def __init__(self, value):
+		self.value = value
+
+
+class JobFilter(list):
+	'''A JobFilter is a sequence of JobFilters.'''
+	def __call__(self, job):
+		for filter in self:
+			job = filter(job) or job
+		return job
+
+
+class NullFilter(JobFilter):
+	'''A job filter that does nothing to the job; a placeholder.'''
+	def __call__(self, job):
+		return job
+
+
+class AdFilter(JobFilter):
+	'''A job filter that selects only classads matching a Matcher
+	expression.'''
+
 	def __init__(self, rule):
 		self.matcher = Matcher(rule.split(' '))
 
@@ -475,6 +501,86 @@ class JobFilter(object):
 		for key in self.matcher(job.keys()):
 			new[key] = job[key]
 		return new
+
+
+class EnsureFilter(JobFilter):
+	'''A job filter that ensures certain classads are defined.'''
+
+	def __init__(self, ensures):
+		self.ensures = ensures
+
+	@classmethod
+	def fromconfig(cls, config):
+		'''Create an EnsureFilter from a ConfigParser instance.'''
+		if not config.has_section('ensure'):
+			return NullFilter()
+		self = cls({})
+		for classad, value in config.items('ensure'):
+			self.ensures[classad] = preparsed(self.asbest(value))
+		return self
+
+	@staticmethod
+	def asquoted(value):
+		'''Try to parse as a quoted string.'''
+		if value.startswith('"') and value.endswith('"'):
+			return value[1:-1]
+		if value.startswith("'") and value.endswith("'"):
+			return value[1:-1]
+		return None
+
+	@staticmethod
+	def asint(value):
+		'''Try to parse as integer.'''
+		try:
+			return int(value)
+		except:
+			return None
+
+	@staticmethod
+	def asfloat(value):
+		'''Try to parse as floating-point.'''
+		try:
+			return float(value)
+		except:
+			return None
+
+	@staticmethod
+	def asbool(value):
+		'''Try to parse as a boolean word.'''
+		value = str(value).lower()
+		if value in ('0', 'off', 'no', 'false'):
+			return False
+		elif value in ('1', 'on', 'yes', 'true'):
+			return True
+		else:
+			return None
+
+	@staticmethod
+	def asstr(value):
+		'''Parse as a string; does not fail.'''
+		return str(value)
+
+	def asbest(self, value):
+		'''Pick the best way to parse a value.'''
+		return self.asquoted(value) or \
+		       self.asint(value) or \
+		       self.asfloat(value) or \
+		       self.asbool(value) or \
+		       self.asstr(value)
+
+	def __call__(self, job):
+		'''Apply an ensures set.'''
+		keys = [k.lower() for k in job.keys()]
+		for key, value in self.ensures.items():
+			if key.lower() not in keys:
+				# value can be of several types:
+				if hasattr(value, '__call__'):
+					job[key] = value(job)
+				elif value.__class__ == preparsed:
+					job[key] = value.value
+				else:
+					job[key] = self.asbest(value)
+		return job
 
 
 def usage(fp=sys.stderr):
@@ -569,13 +675,18 @@ def main(args):
 	else:
 		db = CrowMongo(dbserver, dbname)
 
-	adfilter = JobFilter(cfg.get('condor', 'adfilter') + ' GlobalJobId or')
+	jobfilter = JobFilter()
+	if cfg.has_section('ensure'):
+		jobfilter.append(EnsureFilter.fromconfig(cfg))
+
+	if cfg.has_option('condor', 'adfilter'):
+		jobfilter.append(AdFilter(cfg.get('condor', 'adfilter') + ' GlobalJobId or'))
 
 	def queue(args):
 		interval = _interval or cfg.getint('crow', 'queueinterval')
 		w = QueueWatcher(interval=interval, hooks=hooks)
 		for snapshot in w:
-			snapshot = adfilter(snapshot)
+			snapshot = jobfilter(snapshot)
 			ctx.count += 1
 			db.update(snapshot)
 		return 0
@@ -587,14 +698,14 @@ def main(args):
 				# Given args, do a one-time pass over each named file
 				w = HistoryWatcher(arg, interval=None, hooks=hooks)
 				for snapshot in w:
-					snapshot = adfilter(snapshot)
+					snapshot = jobfilter(snapshot)
 					ctx.count += 1
 					db.update(snapshot)
 		else:
 			file = cfg.get('condor', 'historyfile')
 			w = HistoryWatcher(file, interval=interval, hooks=hooks)
 			for snapshot in w:
-				snapshot = adfilter(snapshot)
+				snapshot = jobfilter(snapshot)
 				ctx.count += 1
 				db.update(snapshot)
 		return 0
