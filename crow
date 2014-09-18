@@ -18,21 +18,28 @@ except ImportError:
 
 DefaultConfig = '''
 [crow]
-brand = generic
 debug = false
-detach = false
+brand = generic
 historyinterval = 30
 queueinterval = 60
+detach = true
 
 [db]
-server = mongodb://db.mwt2.org:27017
 database = crow_%(brand)s
+server = mongodb://mongodbserver:27017
 
 [condor]
 historyfile = /var/lib/condor/spool/history
 # This adfilter will accept all classads. Use a Matcher expression
 # to exclude or include classads by name.
 adfilter = /.*/
+
+# matcher-expression := [!]<matcher-atom> [<matcher-expression> logical-conjunction]
+# matcher-atom := <regular-expression> | <glob-expression> | <literal-expression>
+# regular-expression := /[regular expression tokens]/
+# glob-expression := [fnmatch glob, containing ? or *]
+# literal-expression := [anything else]
+# logical-conjunction := OR | AND | NOT
 '''
 
 JobStates = (
