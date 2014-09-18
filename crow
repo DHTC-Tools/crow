@@ -70,15 +70,21 @@ class QueueWatcher(object):
 		if schedd:
 			if not collector:
 				raise TypeError, 'QueueWatcher with schedd requires collector name also'
-			coll = htcondor.Collector(collector)
-			ad = coll.locate(htcondor.DaemonTypes.Schedd, schedd)
-			self.source = htcondor.Schedd(ad)
+			def reconnect():
+				coll = htcondor.Collector(collector)
+				ad = coll.locate(htcondor.DaemonTypes.Schedd, schedd)
+				self.source = htcondor.Schedd(ad)
 
 		elif collector:
-			self.source = htcondor.Collector(collector)
+			def reconnect():
+				self.source = htcondor.Collector(collector)
 
 		else:
-			self.source = htcondor.Schedd()
+			def reconnect():
+				self.source = htcondor.Schedd()
+
+		self.reconnect = reconnect
+		self.reconnect()
 
 
 	@staticmethod
@@ -100,7 +106,10 @@ class QueueWatcher(object):
 			try:
 				jobs = self.source.query()
 			except Exception, e:
-				print >>sys.stderr, str(e)
+				print >>sys.stderr, 'crow queue %s: %s (reconnecting)' (time.strftime('%Y%m%dT%H%M%S'), str(e))
+				self.reconnect()
+				continue
+
 			if self.hooks['begin'](self, jobs) is False:
 				break
 			for job in jobs:
