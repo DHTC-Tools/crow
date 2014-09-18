@@ -23,10 +23,10 @@ brand = generic
 historyinterval = 30
 queueinterval = 60
 detach = true
+db = default
 
 [db]
-database = crow_%(brand)s
-server = mongodb://mongodbserver:27017
+default = mongodb://mongodbserver:27017, crow_%(brand)s
 
 [condor]
 historyfile = /var/lib/condor/spool/history
@@ -61,6 +61,9 @@ class Config(ConfigParser.RawConfigParser):
 def tfmt(t):
 	return '%.3f (%s)' % (float(t), time.ctime(t))
 
+
+class CrowError(Exception):
+	pass
 
 class QueueWatcher(object):
 	'''QueueWatcher creates a relationship to a schedd or collector, so
@@ -257,6 +260,27 @@ class CrowDB(object):
 	information, abstracted over get/set methods that are implemented
 	by a subclass.  See CrowMongo below for example.'''
 
+	class InappropriateDriverError(CrowError): pass
+
+	@classmethod
+	def _try(cls, *args):
+		#self = cls(*args)
+		raise cls.InappropriateDriverError, '%s is a metadriver' % cls.__name__
+
+	@classmethod
+	def open(cls, *args):
+		symbols = globals()
+		for sym, value in symbols.items():
+			if type(value) != type(cls):
+				continue
+			if not issubclass(value, cls):
+				continue
+			try:
+				return value._try(*args)
+			except Exception, e:
+				pass
+		return None
+
 	@staticmethod
 	def jobhash(rec):
 		'''Compute a unique identifier for an instantaneous job state
@@ -319,7 +343,19 @@ class CrowMongo(CrowDB):
 	'''Implements a MongoDB store for job history that follows the
 	common update logic in CrowDB above.'''
 
-	def __init__(self, addr, dbname):
+	@classmethod
+	def _try(cls, *args):
+		if args[0].startswith('mongodb:'):
+			return cls(*args)
+		raise cls.InappropriateDriverError, '%s is not a mongodb database spec' % args[0]
+
+	def __init__(self, *args):
+		addr = args[0]
+		if len(args) > 1:
+			dbname = args[1]
+		else:
+			dbname = 'crow'
+
 		try:
 			conn = pymongo.MongoClient(addr)
 		except AttributeError:
@@ -617,7 +653,7 @@ def main(args):
 		cfg.read(file)
 
 	try:
-		opts, args = getopt.getopt(args, 'hDC:d:b:i:', ['help', 'debug', 'config=', 'database=', 'brand=', 'interval='])
+		opts, args = getopt.getopt(args, 'hDC:d:b:i:', ['help', 'debug', 'config=', 'db=', 'database=', 'databases=', 'brand=', 'interval='])
 	except getopt.GetoptError, e:
 		print >>sys.stderr, str(e)
 		print >>sys.stderr
@@ -627,7 +663,8 @@ def main(args):
 		if opt in ('-C', '--config'):
 			cfg.read(arg)
 
-	dbserver = cfg.get('db', 'server')
+	databases = []
+
 	brand = cfg.get('crow', 'brand')
 	debug = cfg.getboolean('crow', 'debug')
 	detach = cfg.getboolean('crow', 'detach')
@@ -636,8 +673,8 @@ def main(args):
 	for opt, arg in opts:
 		if opt in ('-D', '--debug'):
 			debug = True
-		if opt in ('-d', '--dbserver'):
-			dbname = arg
+		if opt in ('-d', '--database', '--databases', '--db'):
+			databases.append(arg)
 		if opt in ('--detach',):
 			detach = True
 		if opt in ('-b', '--brand'):
@@ -646,6 +683,11 @@ def main(args):
 			_interval = int(arg)
 		if opt in ('-h', '--help'):
 			return usage()
+
+	if not databases:
+		databases = cfg.getlist('crow', 'db')
+	if not databases:
+		databases = ['default']
 
 	if not args:
 		return usage()
@@ -668,12 +710,25 @@ def main(args):
 		'end': end,
 	}
 
-	dbname = cfg.get('db', 'database') % locals()
+	errs = 0
+	dbdefs = {}
+	for name, dbargs in cfg.items('db'):
+		dbdefs[name] = [arg.strip() % locals() for arg in dbargs.split(',')]
+	for name in databases:
+		if name not in dbdefs:
+			print >>sys.stderr, 'no database named "%s" in configuration' % name
+			errs += 1
+	if errs:
+		return 10
+	databases = [(name, CrowDB.open(*dbdefs[name])) for name in databases]
 
 	if debug:
-		db = CrowDebug()
-	else:
-		db = CrowMongo(dbserver, dbname)
+		databases.insert(0, ('debug', CrowDebug()))
+
+	def updateall(snapshot):
+		for name, db in databases:
+			print name, db
+			db.update(snapshot)
 
 	jobfilter = JobFilter()
 	if cfg.has_section('ensure'):
@@ -688,7 +743,7 @@ def main(args):
 		for snapshot in w:
 			snapshot = jobfilter(snapshot)
 			ctx.count += 1
-			db.update(snapshot)
+			updateall(snapshot)
 		return 0
 
 	def history(args):
@@ -700,14 +755,14 @@ def main(args):
 				for snapshot in w:
 					snapshot = jobfilter(snapshot)
 					ctx.count += 1
-					db.update(snapshot)
+					updateall(snapshot)
 		else:
 			file = cfg.get('condor', 'historyfile')
 			w = HistoryWatcher(file, interval=interval, hooks=hooks)
 			for snapshot in w:
 				snapshot = jobfilter(snapshot)
 				ctx.count += 1
-				db.update(snapshot)
+				updateall(snapshot)
 		return 0
 
 	if cmd == 'printconf':
