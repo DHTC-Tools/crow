@@ -30,12 +30,32 @@
 	left: 0;
 	bottom: 0;
 	right: 0;
+	background-color: #000;
+	z-index: -10;
+}
+#moon {
+	margin: auto;
+	position: absolute;
+	display: block;
+	background-color: #eee;
+	top: 0;
+	left: 50%;
+	transform: translateX(-50%);
+	width: 220px;
+	height: 220px;
+	border-radius: 110px;
+	z-index: -5;
 }
 #flying img {
 	margin: auto;
 	display: block;
+	z-index: 10 !important;
+}
+p.credit a {
+	color: #ccf;
 }
 #flying p.credit {
+	color: #eee;
 	position: absolute;
 	bottom: 0;
 	margin-left: 3em;
@@ -67,6 +87,7 @@
 </style>
 
 <div id="flying">
+	<div id="moon"></div>
 	<img src="flying.gif"></img>
 	<div class="status">
 		<span class="name">Crow</span>
