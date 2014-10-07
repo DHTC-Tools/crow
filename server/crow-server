@@ -104,6 +104,7 @@ class crowhandler(object):
 		reqid = self.instance + '.' + str(self.req)
 		def log(msg):
 			print '[%.3f %s] %s' % (time.time(), reqid, msg)
+			sys.stdout.flush()
 		log('request to ' + self.__class__.__name__)
 		return self.post(log, *args, **kwargs)
 
@@ -217,44 +218,26 @@ class starts(crowhandler):
 			})
 		log('t(mongodb) = %.5fs' % t.check())
 
-		# Scale up to milliseconds
-		ct *= 1000
-		interval *= 1000
-		binwidth *= 1000
-
 		result = {}
 		result['plot'] = []
 
-		# various relations we can perform
-		def _ilija(refstart, refend, jobstart, jobend):
-			# original code, not sure what view this is for:
-			if refstart > jobstart and refstart < jobend:
-				return True
-			return False
+		_running = lambda stime, etime: \
+		                  (int((stime - startTime) / binwidth),
+			               int((etime - startTime) / binwidth))
 
-		def _running(refstart, refend, jobstart, jobend):
-			if jobend < refstart:
-				return False
-			if jobstart > refend:
-				return False
-			return True
+		_started = lambda stime, etime: \
+		                  (int((stime - startTime) / binwidth),
+			               int((stime - startTime) / binwidth))
 
-		def _started(refstart, refend, jobstart, jobend):
-			if jobstart > refstart and jobstart < refend:
-				return True
-			return False
-
-		def _finished(refstart, refend, jobstart, jobend):
-			if jobend > refstart and jobend < refend:
-				return True
-			return False
+		_finished = lambda stime, etime: \
+		                   (int((etime - startTime) / binwidth),
+			                int((etime - startTime) / binwidth))
 
 		rel = {
 			'default': (_running, 'JobStartDate'),
 			'running': (_running, 'JobStartDate'),
 			'started': (_started, 'JobStartDate'),
 			'finished': (_finished, 'JobStartDate'),
-			'ilija': (_ilija, 'JobStartDate'),
 			'submitted': (_started, 'QDate'),
 		}
 
@@ -266,21 +249,25 @@ class starts(crowhandler):
 		for p in series:
 			pData[p] = []
 			for b in range(params.bins):
-				binstart = (startTime * 1000) + (b * binwidth)
-				pData[p].append([binstart, 0])
+				binstart = startTime + (b * binwidth)
+				pData[p].append([binstart * 1000, 0])
 		log('t(distinct) %.5fs' % t.check())
 
 		t = timer().start()
 		for r in rows:
 			group = r['latest'][params.groupby]
-			stime = r['latest'][rel[params.rel][1]] * 1000
+			stime = r['latest'][rel[params.rel][1]]
 			if 'CompletionDate' in r['latest']:
-				etime = r['latest']['CompletionDate'] * 1000
+				etime = r['latest']['CompletionDate']
 			else:
 				etime = ct
-			for b in range(params.bins):
-				if rel[params.rel][0](pData[group][b][0], pData[group][b][0] + binwidth, stime, etime):
-					pData[group][b][1] += 1
+			first, last = rel[params.rel][0](stime, etime)
+			if first < 0:
+				first = 0
+			if last >= params.bins:
+				last = params.bins - 1
+			for b in range(first, last+1):
+				pData[group][b][1] += 1
 		log('t(binning) = %.5fs' % t.check())
 
 		# not sure why yet but some of these groups come up with zero counts
