@@ -35,18 +35,40 @@
 	margin: auto;
 	display: block;
 }
-#flying p {
+#flying p.credit {
 	position: absolute;
 	bottom: 0;
 	margin-left: 3em;
 	margin-right: auto;
 	font-size: 50%;
 }
+#flying div.status {
+	color: #555;
+	font-family: "HelveticaNeueBlack", "HelveticaNeue-Black", "Helvetica Neue Black", "HelveticaNeueHeavy", "HelveticaNeue-Heavy", "Helvetica Neue Heavy", "HelveticaNeueBold", "HelveticaNeue-Bold", "Helvetica Neue Bold", "HelveticaNeue", "Helvetica Neue", 'TeXGyreHerosBold', "Arial Black", sans-serif;
+	font-weight: 000;
+	font-stretch: normal;
+	text-align: center;
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+}
+#flying span.name {
+	font-size: 400%;
+}
+#flying span.working {
+	font-size: 200%;
+}
 </style>
 
 <div id="flying">
 	<img src="flying.gif"></img>
-	<p>Flying raven by <a href="http://jesseth.deviantart.com/">Jessie Mollodovsky</a></p>
+	<div class="status">
+		<span class="name">Crow</span>
+		<br/>
+		<span class="working">is scavenging data</span>
+	</div>
+	<p class="credit">Flying raven by <a href="http://jesseth.deviantart.com/">Jessie Mollodovsky</a></p>
 </div>
 <div id="idGraphSpace"></div>
 
@@ -157,7 +179,7 @@
 
 	$(document).ready(function() {
 		$('#idGraphSpace').hide();
-		setTimeout(load, 1);
+		load();
 	});
 </script>
 
