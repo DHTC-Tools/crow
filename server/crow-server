@@ -104,6 +104,7 @@ class crowhandler(object):
 		reqid = self.instance + '.' + str(self.req)
 		def log(msg):
 			print '[%.3f %s] %s' % (time.time(), reqid, msg)
+			sys.stdout.flush()
 		log('request to ' + self.__class__.__name__)
 		return self.post(log, *args, **kwargs)
 
