@@ -29,8 +29,8 @@ mkdir -p %{buildroot}%{_sysconfdir}
 mkdir -p %{buildroot}%{_sysconfdir}/sysconfig
 mkdir -p %{buildroot}%{_sysconfdir}/init.d
 mkdir -p %{buildroot}%{_defaultdocdir}/%{name}-%{version}
-cp -p crow %{buildroot}%{_bindir}
-cp -p qcrow %{buildroot}%{_bindir}
+cp -p bin/crow %{buildroot}%{_bindir}
+cp -p bin/qcrow %{buildroot}%{_bindir}
 cp -p README.md LICENSE %{buildroot}%{_defaultdocdir}/%{name}-%{version}
 cp -p etc/sysconfig %{buildroot}%{_sysconfdir}/sysconfig/crow
 cp -p etc/crow.ini %{buildroot}%{_sysconfdir}/crow.ini
