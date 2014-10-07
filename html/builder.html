@@ -1,0 +1,81 @@
+<script src="//code.jquery.com/jquery-2.1.1.min.js"></script>
+
+Pool: <select id="pool"></select><br/>
+Group by: <select id="groupby"></select><br/>
+Relation: <select id="rel"></select><br/>
+Width: <input id="width"></input><br/>
+Height: <input id="height"></input><br/>
+Start time/date: <input id="start"></input>  (try values like "Sep 15", "6am". All times are UTC.)<br/>
+End time/date: <input id="end"></input><br/>
+Hours: <input id="hours"></input><br/>
+Minimum bin width: <input id="minbin"></input><br/>
+
+<br/>
+
+URL: <a id="url" href=""></a><br/>
+
+<script>
+var baseURL = 'http://visualize.ci-connect.net/iv/jobchart.html'; //?brand=osg&groupby=user&rel=submitted&start=Sep+1+2014&hours=48
+
+var params = {
+	pool: ['osg'],
+	groupby: ['user', 'project'],
+	rel: ['running', 'submitted', 'started', 'finished', 'ilija'],
+	width: null,
+	height: null,
+	start: null,
+	end: 'now',
+	hours: 72,
+	minbin: null,
+};
+
+function getvalue(key) {
+	return $('#' + key).val();
+}
+
+function update() {
+	var node = $('#url');
+	var url = baseURL + '?';
+	for (var key in params) {
+		var val = getvalue(key);
+		if (val === null)
+			1;
+		else if (val == "")
+			1;
+		else
+			url += '&' + key + '=' + encodeURI(getvalue(key));
+	}
+	url = url.replace('?&', '?');
+	node.attr('href', url);
+	node.html(url);
+}
+
+function init() {
+	for (var key in params) {
+		var node = $('#' + key);
+		if (params[key] === parseInt(params[key])) {
+			node.val(params[key]);
+		}
+		else if (params[key] === String(params[key])) {
+			node.val(params[key]);
+		}
+		else if (params[key] === null) {
+			node.val('');
+		}
+		else if ('length' in params[key]) {
+			for (var i in params[key]) {
+				var value = params[key][i];
+				node.append($('<option>')
+					.attr('value', value)
+					.text(value));
+			}
+		}
+		node.change(update);
+	}
+	update();
+}
+
+$(document).ready(function () {
+	init();
+});
+</script>
