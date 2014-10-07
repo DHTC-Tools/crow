@@ -29,12 +29,15 @@ mkdir -p %{buildroot}%{_sysconfdir}
 mkdir -p %{buildroot}%{_sysconfdir}/sysconfig
 mkdir -p %{buildroot}%{_sysconfdir}/init.d
 mkdir -p %{buildroot}%{_defaultdocdir}/%{name}-%{version}
+mkdir -p %{buildroot}/var/lib/crow
 cp -p bin/crow %{buildroot}%{_bindir}
 cp -p bin/qcrow %{buildroot}%{_bindir}
 cp -p README.md LICENSE %{buildroot}%{_defaultdocdir}/%{name}-%{version}
 cp -p etc/sysconfig %{buildroot}%{_sysconfdir}/sysconfig/crow
 cp -p etc/crow.ini %{buildroot}%{_sysconfdir}/crow.ini
 cp -p etc/initcrow %{buildroot}%{_sysconfdir}/init.d/crow
+cp -p etc/init-mw %{buildroot}%{_sysconfdir}/init.d/crow-mw
+cp -pr server html %{buildroot}/var/lib/crow
 
 %clean
 rm -rf %{buildroot}
@@ -49,6 +52,8 @@ rm -rf %{buildroot}
 %config %{_sysconfdir}/sysconfig/crow
 %config %{_sysconfdir}/crow.ini
 %{_sysconfdir}/init.d/crow
+/var/lib/crow/html/
+/var/lib/crow/server/
 
 
 
