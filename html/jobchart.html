@@ -22,57 +22,103 @@
 
 <script>
 	var uri = URI(window.location.href);
-	var params = uri.query(true);
-	var width = 600; //800;
-	var height = 200; //600;
-	var interval = 48;
-	var pool = 'crow_osg'; //'crow_default';
-	if ('width' in params)
-		width = 0 + params.width;
-	if ('height' in params)
-		height = 0 + params.height;
-	if ('interval' in params)
-		interval = 0 + params.interval;
-	if ('brand' in params)
-		pool = 'crow_' + params.brand;
+	var query = uri.query(true);
+
+	var params = {
+		width: [$(window).width() - 50, parseInt], //800,
+		height: [$(window).height() - 50, parseInt], //600,
+		hours: [48, parseInt],
+		minbin: [10, parseInt],
+		pool: ['osg', String],
+		groupby: ['ProjectName', String],
+		rel: ['default', String],
+		start: ['default', String],
+		end: ['default', String],
+	};
+
+	var groupings = {
+		'project': 'ProjectName',
+		'user': 'Owner',
+	};
+
+	for (var key in params) {
+		if (key in query) {
+			params[key] = params[key][1](query[key]);
+		}
+		else {
+			params[key] = params[key][0];
+		}
+	}
 
 	function load() {
 
-		$('#idGraphSpace').css({width: width, height: height});
+		$('#idGraphSpace').css({width: params.width, height: params.height});
 
-		binsize = 48*3600*1000/600;
+		/* Start with one bin per hour */
+		bins = params.hours;
+		millis = 3600 * 1000;
+
+		/* Bin width is chartwidth/bins.  If this is too small, then make fewer bins */
+		while (params.width / bins < params.minbin) {
+			bins /= 2;
+			millis *= 2;
+		}
+
 		var options = {
-				chart : {
-					renderTo : 'idGraphSpace', zoomType : 'xy',
-					type : 'column',
-					//margin : [ 60, 30, 45, 70 ],
-					width: width, height: height
+				chart: {
+					renderTo: 'idGraphSpace',
+					zoomType: 'xy',
+					type: 'column',
+					//margin: [ 60, 30, 45, 70 ],
+					width: params.width,
+					height: params.height
 				},
-				plotOptions : { column : { stacking : 'normal', pointRange : binsize, pointPadding : 0, groupPadding : 0 } },
-				title : { text : '' },
-				xAxis : { type : 'datetime', tickWidth : 0, gridLineWidth : 1, /* title : { text : 'Date' } */ },
-				yAxis : { title : { text : 'Jobs' } },
-				legend : { align : 'left', verticalAlign : 'top', y : 10, floating : true, borderWidth : 0 },
+				plotOptions: { column: {
+					stacking: 'normal',
+					pointPadding: 0.0,
+					groupPadding: 0,
+					pointInterval: millis,	/* how many millis per data point/bin */
+				} },
+				title: { text: '' },
+				xAxis: { type: 'datetime', tickWidth: 0, gridLineWidth: 1, /* title: { text: 'Date' } */ },
+				yAxis: { title: { text: 'Jobs' } },
+				legend: { align: 'left', verticalAlign: 'top', y: 10, floating: true, borderWidth: 0 },
 				//exporting: {	   buttons: { contextButton: {	text: 'Export' } }, sourceHeight:1050, sourceWidth: 1485	},
 				credits: { enabled: false },
-				tooltip: { formatter: function() { return '<b>'+ this.series.name +'</b><br/>'+ Highcharts.dateFormat('%e. %b', this.x) +' Value:'+ this.y;} }
+				tooltip: { formatter: function() {
+					return ('<b>' + this.series.name + '</b><br/>' +
+						Highcharts.dateFormat('%a %d %b %Y, %H:%M', this.x) + ' UTC<br/>' +
+						'Jobs: ' + this.y)
+				} }
 		}; 
 
 		$.ajaxSetup({async: false});
 		$.ajax({
 			type: "POST",
-			url: "/service/mongo-xaod/bicperproject",
-			data: JSON.stringify({"project": "all",  "user": "all", "task": "all",	"interval": 48, "pool": pool }),
+			url: "/service/mongo-crow/starts",
+			data: JSON.stringify({
+				"project": "all",
+				"user": "all",
+				"task": "all",
+				"hours": params.hours,
+				"pool": params.pool,
+				"groupby": groupings[params.groupby],
+				"bins": bins,
+				"width": params.width,
+				"rel": params.rel,
+				"start": params.start,
+				"end": params.end,
+			}),
 			contentType: "application/json; charset=utf-8",
 			dataType: "json",
-			success: function(data){
+			success: function(data) {
 				options.series=data.plot;
 				chart = new Highcharts.Chart(options); 
-				},
+			},
 			failure: function(errMsg) {
 				alert(errMsg);
-				}
-			});
+			}
+		});
 	}
 
 	$(document).ready( function() {  load();  });
