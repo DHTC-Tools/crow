@@ -24,17 +24,23 @@ from pymongo import MongoClient
 from bson.json_util import dumps
 import cherrypy
 
+# Ensure that all operations are done in UTC
 os.environ['TZ'] = 'UTC'
 time.tzset()
 
 try:
 	import parsedatetime
 	pdt = parsedatetime.Calendar()
-
 except ImportError:
 	pdt = None
 
 def tconv(s):
+	'''Converts time string to Epoch seconds (int).
+	If parsedatetime available, we can convert various English
+	expressions of time.  If not, we can only convert Epoch
+	seconds as a string to Epoch seconds as int.
+	'''
+
 	try:
 		return int(s)
 	except ValueError:
@@ -59,15 +65,20 @@ def tconv(s):
 		return _(ptm)
 
 
-client = MongoClient('localhost', 27017)
+class timer(object):
+	def __init__(self):
+		self._start = None
 
-def getDB(client, x):
-	name = 'crow_' + x
-	if hasattr(client, name):
-		db = getattr(client, name)
-		if hasattr(db, 'jobs'):
-			return db.jobs
-	return None
+	def start(self):
+		self._start = time.time()
+		return self
+
+	def check(self):
+		return time.time() - self._start
+
+	def stop(self):
+		self._stop = time.time()
+		return self._stop - self._start
 
 
 class frob(dict):
@@ -77,16 +88,36 @@ class frob(dict):
 		self[key] = value
 
 
-class jsonrequest(object):
+class crowhandler(object):
+	def __init__(self, app):
+		self.app = app
+		_ = hashlib.md5()
+		_.update(str(time.time()) + str(id(self)))
+		self.instance = _.hexdigest()[:8]
+		self.req = 0
+
 	@cherrypy.tools.accept(media='application/json')
 	@cherrypy.tools.json_out()
 	@cherrypy.tools.json_in()
 	def POST(self, *args, **kwargs):
-		print '[%.3f] request to %s' % (time.time(), self.__class__.__name__)
-		return self.post(*args, **kwargs)
+		self.req += 1
+		reqid = self.instance + '.' + str(self.req)
+		def log(msg):
+			print '[%.3f %s] %s' % (time.time(), reqid, msg)
+		log('request to ' + self.__class__.__name__)
+		return self.post(log, *args, **kwargs)
 
 
-class starts(jsonrequest):
+	def getDB(self, x):
+		name = 'crow_' + x
+		if hasattr(self.app.mongoclient, name):
+			db = getattr(self.app.mongoclient, name)
+			if hasattr(db, 'jobs'):
+				return db.jobs
+		return None
+
+
+class starts(crowhandler):
 	exposed = True
 
 	# QDate = 1410041462
@@ -99,7 +130,7 @@ class starts(jsonrequest):
 	# JobFinishedHookDone = 1410041471
 	# LastJobLeaseRenewal = 1410041471
 
-	def post(self):
+	def post(self, log):
 		params = frob({
 			'pool': 'default',
 			'project': 'all',
@@ -119,7 +150,7 @@ class starts(jsonrequest):
 			if key in req:
 				params[key] = type(params[key])(req[key])
 
-		db = getDB(client, req['pool'])
+		db = self.getDB(req['pool'])
 
 		ct = int(time.time())
 		if params.start == 'default' and params.end == 'default':
@@ -131,7 +162,7 @@ class starts(jsonrequest):
 		else:
 			interval = params.hours * 3600
 			startTime = tconv(params.start)
-		print '[] startTime=%d (%s) + %d' % (startTime, time.ctime(startTime), interval)
+		log('startTime=%d (%s) + %d' % (startTime, time.ctime(startTime), interval))
 
 		if not params.bins:
 			params.bins = params.hours
@@ -171,6 +202,7 @@ class starts(jsonrequest):
 			*andFilters
 		);
 
+		t = timer().start()
 		rows = db.find(
 			select,
 			{
@@ -183,6 +215,7 @@ class starts(jsonrequest):
 				'latest.ClusterId': 1,
 				'latest.Owner': 1,
 			})
+		log('t(mongodb) = %.5fs' % t.check())
 
 		# Scale up to milliseconds
 		ct *= 1000
@@ -192,14 +225,7 @@ class starts(jsonrequest):
 		result = {}
 		result['plot'] = []
 
-		series = rows.distinct('latest.' + params.groupby) 
-		pData = {}
-		for p in series:
-			pData[p] = []
-			for b in range(params.bins):
-				binstart = (startTime * 1000) + (b * binwidth)
-				pData[p].append([binstart, 0])
-
+		# various relations we can perform
 		def _ilija(refstart, refend, jobstart, jobend):
 			# original code, not sure what view this is for:
 			if refstart > jobstart and refstart < jobend:
@@ -232,6 +258,19 @@ class starts(jsonrequest):
 			'submitted': (_started, 'QDate'),
 		}
 
+		# aggregate, slice, chop, dice, puree
+
+		t = timer().start()
+		series = rows.distinct('latest.' + params.groupby) 
+		pData = {}
+		for p in series:
+			pData[p] = []
+			for b in range(params.bins):
+				binstart = (startTime * 1000) + (b * binwidth)
+				pData[p].append([binstart, 0])
+		log('t(distinct) %.5fs' % t.check())
+
+		t = timer().start()
 		for r in rows:
 			group = r['latest'][params.groupby]
 			stime = r['latest'][rel[params.rel][1]] * 1000
@@ -242,6 +281,7 @@ class starts(jsonrequest):
 			for b in range(params.bins):
 				if rel[params.rel][0](pData[group][b][0], pData[group][b][0] + binwidth, stime, etime):
 					pData[group][b][1] += 1
+		log('t(binning) = %.5fs' % t.check())
 
 		# not sure why yet but some of these groups come up with zero counts
 		totals = {}
@@ -262,16 +302,16 @@ class starts(jsonrequest):
 		return result
 
 
-class distincts(object):
+class distincts(crowhandler):
 	exposed = True
 	@cherrypy.tools.accept(media='application/json')
 	@cherrypy.tools.json_out()
 	@cherrypy.tools.json_in()
 
-	def post(self):
+	def post(self, log):
 		req = cherrypy.request.json
 
-		db = getDB(client, req['pool'])
+		db = self.getDB(req['pool'])
 
 		interval = 720 * 3600
 		if 'interval' in req:
@@ -296,12 +336,15 @@ class crowmw(object):
 	'''Crow middleware'''
 	exposed = True
 
-	distincts = distincts()
-	starts = starts()
+	def __init__(self, mongoclient):
+		self.mongoclient = mongoclient
+		self.distincts = distincts(self)
+		self.starts = starts(self)
 
 
 if __name__ == '__main__':	  
 	# cherrypy.tools.CORS = cherrypy.Tool('before_finalize', CORS)
 	cherrypy.config.update({'tools.log_headers.on': False})
 	print cherrypy.config
-	cherrypy.quickstart(crowmw(), '/', '/web/crow/crow-server.conf')
+	client = MongoClient('localhost', 27017)
+	cherrypy.quickstart(crowmw(client), '/', '/web/crow/server/crow-server.conf')
