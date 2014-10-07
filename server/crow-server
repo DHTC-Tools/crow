@@ -187,10 +187,17 @@ class starts(crowhandler):
 		if (params.project == 'all'):
 			andFilters.append({'latest.ProjectName': {'$exists': True}})
 		else:
-			andFilters.append({'latest.ProjectName': params.project })
+			andFilters.append(mongofilter(lambda u: {'latest.ProjectName': p}, params.project))
+
+		def mongofilter(f, expr):
+			if ',' in expr:
+				users = expr.split(',')
+				return {'$or': [f(user) for user in users]}
+			else:
+				return f(expr)
 
 		if (params.user != 'all'):
-			andFilters.append({'latest.User': {'$regex': params.user + '@*'} })
+			andFilters.append(mongofilter(lambda u: {'latest.User': {'$regex': u + '@*'}}, params.user))
 
 		if (params.task != 'all'):
 			andFilters.append({'latest.ClusterId': int(params.task)})
