@@ -220,17 +220,17 @@ class starts(crowhandler):
 		result = {}
 		result['plot'] = []
 
-		def _running(stime, etime):
-			return (int((stime - startTime) / binwidth),
-			        int((etime - startTime) / binwidth))
+		_running = lambda stime, etime: \
+		                  (int((stime - startTime) / binwidth),
+			               int((etime - startTime) / binwidth))
 
-		def _started(stime, etime):
-			return (int((stime - startTime) / binwidth),
-			        int((stime - startTime) / binwidth))
+		_started = lambda stime, etime: \
+		                  (int((stime - startTime) / binwidth),
+			               int((stime - startTime) / binwidth))
 
-		def _finished(stime, etime):
-			return (int((etime - startTime) / binwidth),
-			        int((etime - startTime) / binwidth))
+		_finished = lambda stime, etime: \
+		                   (int((etime - startTime) / binwidth),
+			                int((etime - startTime) / binwidth))
 
 		rel = {
 			'default': (_running, 'JobStartDate'),
