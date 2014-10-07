@@ -1,24 +1,54 @@
 <!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
 <html>
 <head>
-<meta http-equiv="Content-Type" content="text/html; charset=US-ASCII">
+	<meta http-equiv="Content-Type" content="text/html; charset=US-ASCII">
 
-<link rel="stylesheet" type="text/css"
-	href="//code.jquery.com/ui/1.10.3/themes/redmond/jquery-ui.css">
+	<link rel="stylesheet" type="text/css"
+		href="//code.jquery.com/ui/1.10.3/themes/redmond/jquery-ui.css">
 
-<script type="text/javascript" language="javascript"
-	src="//code.jquery.com/jquery-1.11.1.min.js"></script>
-<script src="//code.jquery.com/ui/1.10.3/jquery-ui.js"></script>
+	<script type="text/javascript" language="javascript"
+		src="//code.jquery.com/jquery-1.11.1.min.js"></script>
+	<script src="//code.jquery.com/ui/1.10.3/jquery-ui.js"></script>
 
-<script type="text/javascript" language="javascript"
-	src="//cdn.datatables.net/1.10.2/js/jquery.dataTables.min.js"></script>
+	<script type="text/javascript" language="javascript"
+		src="//cdn.datatables.net/1.10.2/js/jquery.dataTables.min.js"></script>
 
-<script type="text/javascript" language="javascript"
-	src="/assets/js/URI.min.js"></script>
+	<script type="text/javascript" language="javascript"
+		src="/assets/js/URI.min.js"></script>
 
-<script src="//code.highcharts.com/highcharts.js"></script>
-<!-- script src="//code.highcharts.com/modules/exporting.js" -->
+	<script src="//code.highcharts.com/highcharts.js"></script>
+	<!-- script src="//code.highcharts.com/modules/exporting.js" -->
+</head>
+<body>
+<style>
+#idGraphSpace {
+	margin: auto;
+}
+#flying {
+	position: absolute;
+	top: 0;
+	left: 0;
+	bottom: 0;
+	right: 0;
+}
+#flying img {
+	margin: auto;
+	display: block;
+}
+#flying p {
+	position: absolute;
+	bottom: 0;
+	margin-left: 3em;
+	margin-right: auto;
+	font-size: 50%;
+}
+</style>
 
+<div id="flying">
+	<img src="flying.gif"></img>
+	<p>Flying raven by <a href="http://jesseth.deviantart.com/">Jessie Mollodovsky</a></p>
+</div>
+<div id="idGraphSpace"></div>
 
 <script>
 	var uri = URI(window.location.href);
@@ -51,7 +81,6 @@
 	}
 
 	function load() {
-
 		$('#idGraphSpace').css({width: params.width, height: params.height});
 
 		/* Start with one bin per hour */
@@ -92,7 +121,7 @@
 				} }
 		}; 
 
-		$.ajaxSetup({async: false});
+		// why? $.ajaxSetup({async: false});
 		$.ajax({
 			type: "POST",
 			url: "/service/mongo-crow/starts",
@@ -112,27 +141,23 @@
 			contentType: "application/json; charset=utf-8",
 			dataType: "json",
 			success: function(data) {
-				options.series=data.plot;
+				$('#idGraphSpace').show();
+				options.series = data.plot;
 				chart = new Highcharts.Chart(options); 
+				$('#flying').remove();
 			},
 			failure: function(errMsg) {
 				alert(errMsg);
+				$('#idGraphSpace').show();
 			}
 		});
 	}
 
-	$(document).ready( function() {  load();  });
-	
+	$(document).ready(function() {
+		$('#idGraphSpace').hide();
+		setTimeout(load, 1);
+	});
 </script>
 
-
-</head>
-<body>
-<style>
-#idGraphSpace {
-	margin: auto;
-}
-</style>
-<div id="idGraphSpace"></div>
 </body>
 </html>
