@@ -43,7 +43,6 @@
 	font-size: 50%;
 }
 #flying div.status {
-	color: #555;
 	font-family: "HelveticaNeueBlack", "HelveticaNeue-Black", "Helvetica Neue Black", "HelveticaNeueHeavy", "HelveticaNeue-Heavy", "Helvetica Neue Heavy", "HelveticaNeueBold", "HelveticaNeue-Bold", "Helvetica Neue Bold", "HelveticaNeue", "Helvetica Neue", 'TeXGyreHerosBold', "Arial Black", sans-serif;
 	font-weight: 000;
 	font-stretch: normal;
@@ -54,10 +53,16 @@
 	transform: translate(-50%, -50%);
 }
 #flying span.name {
-	font-size: 400%;
+	color: #444;
+	font-size: 100%;
+	line-height: 100%;
+	padding: 0;
 }
 #flying span.working {
+	color: #888;
 	font-size: 200%;
+	line-height: 100%;
+	padding: 0;
 }
 </style>
 
@@ -117,6 +122,13 @@
 			millis *= 2;
 		}
 
+		yLabels = {
+			running: 'Jobs Running',
+			started: 'Jobs Started',
+			finished: 'Jobs Completed',
+			queued: 'Jobs Enqueued',
+		}
+
 		var options = {
 				chart: {
 					renderTo: 'idGraphSpace',
@@ -134,7 +146,7 @@
 				} },
 				title: { text: '' },
 				xAxis: { type: 'datetime', tickWidth: 0, gridLineWidth: 1, /* title: { text: 'Date' } */ },
-				yAxis: { title: { text: 'Jobs' } },
+				yAxis: { title: { text: yLabels[params.rel] } },
 				legend: { align: 'left', verticalAlign: 'top', y: 10, floating: true, borderWidth: 0 },
 				//exporting: {	   buttons: { contextButton: {	text: 'Export' } }, sourceHeight:1050, sourceWidth: 1485	},
 				credits: { enabled: false },
@@ -179,6 +191,25 @@
 
 	$(document).ready(function() {
 		$('#idGraphSpace').hide();
+
+		// get title elements
+		var name = $('.name');
+		var working = $('.working');
+
+		// get ratio of name's width to font size
+		name.css('font-size', '200%');
+		var r = name.width() / 200.0;
+
+		// compute ratio of working's width to that ratio
+		var sz = working.width() / r;
+		// and set the f-s to that value
+		name.css('font-size', '' + sz + '%');
+
+		// do it again for fine adjustments
+		var r = name.width() / sz;
+		var sz = working.width() / r;
+		name.css('font-size', '' + sz + '%');
+
 		load();
 	});
 </script>
