@@ -24,17 +24,23 @@ from pymongo import MongoClient
 from bson.json_util import dumps
 import cherrypy
 
+# Ensure that all operations are done in UTC
 os.environ['TZ'] = 'UTC'
 time.tzset()
 
 try:
 	import parsedatetime
 	pdt = parsedatetime.Calendar()
-
 except ImportError:
 	pdt = None
 
 def tconv(s):
+	'''Converts time string to Epoch seconds (int).
+	If parsedatetime available, we can convert various English
+	expressions of time.  If not, we can only convert Epoch
+	seconds as a string to Epoch seconds as int.
+	'''
+
 	try:
 		return int(s)
 	except ValueError:
@@ -59,17 +65,6 @@ def tconv(s):
 		return _(ptm)
 
 
-client = MongoClient('localhost', 27017)
-
-def getDB(client, x):
-	name = 'crow_' + x
-	if hasattr(client, name):
-		db = getattr(client, name)
-		if hasattr(db, 'jobs'):
-			return db.jobs
-	return None
-
-
 class frob(dict):
 	def __getattr__(self, key):
 		return self[key]
@@ -77,7 +72,10 @@ class frob(dict):
 		self[key] = value
 
 
-class jsonrequest(object):
+class crowhandler(object):
+	def __init__(self, app):
+		self.app = app
+
 	@cherrypy.tools.accept(media='application/json')
 	@cherrypy.tools.json_out()
 	@cherrypy.tools.json_in()
@@ -86,7 +84,16 @@ class jsonrequest(object):
 		return self.post(*args, **kwargs)
 
 
-class starts(jsonrequest):
+	def getDB(self, x):
+		name = 'crow_' + x
+		if hasattr(self.app.mongoclient, name):
+			db = getattr(self.app.mongoclient, name)
+			if hasattr(db, 'jobs'):
+				return db.jobs
+		return None
+
+
+class starts(crowhandler):
 	exposed = True
 
 	# QDate = 1410041462
@@ -119,7 +126,7 @@ class starts(jsonrequest):
 			if key in req:
 				params[key] = type(params[key])(req[key])
 
-		db = getDB(client, req['pool'])
+		db = self.getDB(req['pool'])
 
 		ct = int(time.time())
 		if params.start == 'default' and params.end == 'default':
@@ -262,7 +269,7 @@ class starts(jsonrequest):
 		return result
 
 
-class distincts(object):
+class distincts(crowhandler):
 	exposed = True
 	@cherrypy.tools.accept(media='application/json')
 	@cherrypy.tools.json_out()
@@ -271,7 +278,7 @@ class distincts(object):
 	def post(self):
 		req = cherrypy.request.json
 
-		db = getDB(client, req['pool'])
+		db = self.getDB(req['pool'])
 
 		interval = 720 * 3600
 		if 'interval' in req:
@@ -296,12 +303,15 @@ class crowmw(object):
 	'''Crow middleware'''
 	exposed = True
 
-	distincts = distincts()
-	starts = starts()
+	def __init__(self, mongoclient):
+		self.mongoclient = mongoclient
+		self.distincts = distincts(self)
+		self.starts = starts(self)
 
 
 if __name__ == '__main__':	  
 	# cherrypy.tools.CORS = cherrypy.Tool('before_finalize', CORS)
 	cherrypy.config.update({'tools.log_headers.on': False})
 	print cherrypy.config
-	cherrypy.quickstart(crowmw(), '/', '/web/crow/crow-server.conf')
+	client = MongoClient('localhost', 27017)
+	cherrypy.quickstart(crowmw(client), '/', '/web/crow/server/crow-server.conf')
