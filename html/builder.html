@@ -35,11 +35,21 @@ a {
 	height: 150px;
 	z-index: 10;
 }
+span.title {
+	font-size: 200%;
+	color: #888;
+	line-height: 140%;
+}
+span#crow {
+	font-size: 300%;
+	color: #444;
+}
 </style>
 
 <div id="moon"></div>
 <img id="swoop" src="swoop.png"></img>
 
+<span class="title"><span id="crow">crow</span> query builder</span>
 <table>
 <tr><td>Pool:</td><td><select id="pool"></select></td></tr>
 <tr><td>Group by:</td><td><select id="groupby"></select></td></tr>
