@@ -23,10 +23,10 @@ brand = generic
 historyinterval = 30
 queueinterval = 60
 detach = true
+db = default
 
 [db]
-database = crow_%(brand)s
-server = mongodb://mongodbserver:27017
+default = mongodb://mongodbserver:27017, crow_%(brand)s
 
 [condor]
 historyfile = /var/lib/condor/spool/history
@@ -61,6 +61,9 @@ class Config(ConfigParser.RawConfigParser):
 def tfmt(t):
 	return '%.3f (%s)' % (float(t), time.ctime(t))
 
+
+class CrowError(Exception):
+	pass
 
 class QueueWatcher(object):
 	'''QueueWatcher creates a relationship to a schedd or collector, so
@@ -191,44 +194,35 @@ class HistoryWatcher(object):
 
 
 	def __iter__(self):
-		s = os.stat(self._file)
-		inode = s.st_ino
-		self._fp = None
-
 		# Wait for history file to become available
 		while not self._fp:
 			try:
+				s = os.stat(self._file)
+				inode = s.st_ino
 				self._fp = open(self._file, 'r')
-				break
 			except OSError:
+				self._fp = None
 				if self._interval is None:
 					return
-			time.sleep(self._interval)
+				time.sleep(self._interval)
 
 		# history file now exists, and is open
 
 		s = None
 		while True:
-			# Check whether history file has cycled (but only if we are looping)
-			if self._interval is not None:
-				try:
-					s = os.stat(self._file)
-				except OSError:
-					# old file moved, but no new file yet
-					s = None
+			# Make sure history file still exists
+			try:
+				s = os.stat(self._file)
+			except OSError:
+				# no file (yet?)
+				s = None
+			if not s and self._interval is not None:
+				if self._fp:
 					self._fp.close()
 					self._fp = None
+				if not s:
 					time.sleep(self._interval)
 					continue
-
-			# File exists
-			if s and s.st_ino != inode:
-				# Old file moved, and new history file available
-				if self.hooks['cycle'](self) is False:
-					break
-				inode = s.st_ino
-				self._fp.close()
-				self._fp = open(self._file, 'r')
 
 			# Ready to read current file
 			if self._fp:
@@ -245,7 +239,19 @@ class HistoryWatcher(object):
 				break
 
 			sys.stdout.flush()
-			time.sleep(self._interval)
+
+			# Check whether history file has cycled
+			if s and s.st_ino != inode:
+				# Old file moved, and new history file available
+				if self.hooks['cycle'](self) is False:
+					break
+				inode = s.st_ino
+				self._fp.close()
+				self._fp = open(self._file, 'r')
+				# no interval delay if file cycles - scan new one immediately
+
+			else:
+				time.sleep(self._interval)
 
 
 
@@ -253,6 +259,27 @@ class CrowDB(object):
 	'''Provides a base algorithm for updating a database with job
 	information, abstracted over get/set methods that are implemented
 	by a subclass.  See CrowMongo below for example.'''
+
+	class InappropriateDriverError(CrowError): pass
+
+	@classmethod
+	def _try(cls, *args):
+		#self = cls(*args)
+		raise cls.InappropriateDriverError, '%s is a metadriver' % cls.__name__
+
+	@classmethod
+	def open(cls, *args):
+		symbols = globals()
+		for sym, value in symbols.items():
+			if type(value) != type(cls):
+				continue
+			if not issubclass(value, cls):
+				continue
+			try:
+				return value._try(*args)
+			except Exception, e:
+				pass
+		return None
 
 	@staticmethod
 	def jobhash(rec):
@@ -316,7 +343,19 @@ class CrowMongo(CrowDB):
 	'''Implements a MongoDB store for job history that follows the
 	common update logic in CrowDB above.'''
 
-	def __init__(self, addr, dbname):
+	@classmethod
+	def _try(cls, *args):
+		if args[0].startswith('mongodb:'):
+			return cls(*args)
+		raise cls.InappropriateDriverError, '%s is not a mongodb database spec' % args[0]
+
+	def __init__(self, *args):
+		addr = args[0]
+		if len(args) > 1:
+			dbname = args[1]
+		else:
+			dbname = 'crow'
+
 		try:
 			conn = pymongo.MongoClient(addr)
 		except AttributeError:
@@ -372,8 +411,12 @@ class CrowMongo(CrowDB):
 
 
 class CrowDebug(CrowDB):
+	def __init__(self, *args):
+		self.pprint = __import__('pprint')
+
 	def update(self, job, active=none):
 		print job['GlobalJobId'], '(%d classads)' % len(job.keys())
+		print self.pprint.pformat(job)
 
 
 ##### Lifted from tanglib
@@ -471,7 +514,29 @@ class Matcher(list):
 ##### End of snitch from tanglib
 
 
-class JobFilter(object):
+class preparsed(object):
+	def __init__(self, value):
+		self.value = value
+
+
+class JobFilter(list):
+	'''A JobFilter is a sequence of JobFilters.'''
+	def __call__(self, job):
+		for filter in self:
+			job = filter(job) or job
+		return job
+
+
+class NullFilter(JobFilter):
+	'''A job filter that does nothing to the job; a placeholder.'''
+	def __call__(self, job):
+		return job
+
+
+class AdFilter(JobFilter):
+	'''A job filter that selects only classads matching a Matcher
+	expression.'''
+
 	def __init__(self, rule):
 		self.matcher = Matcher(rule.split(' '))
 
@@ -480,6 +545,86 @@ class JobFilter(object):
 		for key in self.matcher(job.keys()):
 			new[key] = job[key]
 		return new
+
+
+class EnsureFilter(JobFilter):
+	'''A job filter that ensures certain classads are defined.'''
+
+	def __init__(self, ensures):
+		self.ensures = ensures
+
+	@classmethod
+	def fromconfig(cls, config):
+		'''Create an EnsureFilter from a ConfigParser instance.'''
+		if not config.has_section('ensure'):
+			return NullFilter()
+		self = cls({})
+		for classad, value in config.items('ensure'):
+			self.ensures[classad] = preparsed(self.asbest(value))
+		return self
+
+	@staticmethod
+	def asquoted(value):
+		'''Try to parse as a quoted string.'''
+		if value.startswith('"') and value.endswith('"'):
+			return value[1:-1]
+		if value.startswith("'") and value.endswith("'"):
+			return value[1:-1]
+		return None
+
+	@staticmethod
+	def asint(value):
+		'''Try to parse as integer.'''
+		try:
+			return int(value)
+		except:
+			return None
+
+	@staticmethod
+	def asfloat(value):
+		'''Try to parse as floating-point.'''
+		try:
+			return float(value)
+		except:
+			return None
+
+	@staticmethod
+	def asbool(value):
+		'''Try to parse as a boolean word.'''
+		value = str(value).lower()
+		if value in ('0', 'off', 'no', 'false'):
+			return False
+		elif value in ('1', 'on', 'yes', 'true'):
+			return True
+		else:
+			return None
+
+	@staticmethod
+	def asstr(value):
+		'''Parse as a string; does not fail.'''
+		return str(value)
+
+	def asbest(self, value):
+		'''Pick the best way to parse a value.'''
+		return self.asquoted(value) or \
+		       self.asint(value) or \
+		       self.asfloat(value) or \
+		       self.asbool(value) or \
+		       self.asstr(value)
+
+	def __call__(self, job):
+		'''Apply an ensures set.'''
+		keys = [k.lower() for k in job.keys()]
+		for key, value in self.ensures.items():
+			if key.lower() not in keys:
+				# value can be of several types:
+				if hasattr(value, '__call__'):
+					job[key] = value(job)
+				elif value.__class__ == preparsed:
+					job[key] = value.value
+				else:
+					job[key] = self.asbest(value)
+		return job
 
 
 def usage(fp=sys.stderr):
@@ -516,7 +661,7 @@ def main(args):
 		cfg.read(file)
 
 	try:
-		opts, args = getopt.getopt(args, 'hDC:d:b:i:', ['help', 'debug', 'config=', 'database=', 'brand=', 'interval='])
+		opts, args = getopt.getopt(args, 'hDC:d:b:i:', ['help', 'debug', 'config=', 'db=', 'database=', 'databases=', 'brand=', 'interval='])
 	except getopt.GetoptError, e:
 		print >>sys.stderr, str(e)
 		print >>sys.stderr
@@ -526,7 +671,8 @@ def main(args):
 		if opt in ('-C', '--config'):
 			cfg.read(arg)
 
-	dbserver = cfg.get('db', 'server')
+	databases = []
+
 	brand = cfg.get('crow', 'brand')
 	debug = cfg.getboolean('crow', 'debug')
 	detach = cfg.getboolean('crow', 'detach')
@@ -535,8 +681,8 @@ def main(args):
 	for opt, arg in opts:
 		if opt in ('-D', '--debug'):
 			debug = True
-		if opt in ('-d', '--dbserver'):
-			dbname = arg
+		if opt in ('-d', '--database', '--databases', '--db'):
+			databases.append(arg)
 		if opt in ('--detach',):
 			detach = True
 		if opt in ('-b', '--brand'):
@@ -545,6 +691,11 @@ def main(args):
 			_interval = int(arg)
 		if opt in ('-h', '--help'):
 			return usage()
+
+	if not databases:
+		databases = cfg.getlist('crow', 'db')
+	if not databases:
+		databases = ['default']
 
 	if not args:
 		return usage()
@@ -567,22 +718,40 @@ def main(args):
 		'end': end,
 	}
 
-	dbname = cfg.get('db', 'database') % locals()
+	errs = 0
+	dbdefs = {}
+	for name, dbargs in cfg.items('db'):
+		dbdefs[name] = [arg.strip() % locals() for arg in dbargs.split(',')]
+	for name in databases:
+		if name not in dbdefs:
+			print >>sys.stderr, 'no database named "%s" in configuration' % name
+			errs += 1
+	if errs:
+		return 10
+	databases = [(name, CrowDB.open(*dbdefs[name])) for name in databases]
 
 	if debug:
-		db = CrowDebug()
-	else:
-		db = CrowMongo(dbserver, dbname)
+		databases.insert(0, ('debug', CrowDebug()))
 
-	adfilter = JobFilter(cfg.get('condor', 'adfilter') + ' GlobalJobId or')
+	def updateall(snapshot, active=None):
+		for name, db in databases:
+			print name, db
+			db.update(snapshot, active=None)
+
+	jobfilter = JobFilter()
+	if cfg.has_section('ensure'):
+		jobfilter.append(EnsureFilter.fromconfig(cfg))
+
+	if cfg.has_option('condor', 'adfilter'):
+		jobfilter.append(AdFilter(cfg.get('condor', 'adfilter') + ' GlobalJobId or'))
 
 	def queue(args):
 		interval = _interval or cfg.getint('crow', 'queueinterval')
 		w = QueueWatcher(interval=interval, hooks=hooks)
 		for snapshot in w:
-			snapshot = adfilter(snapshot)
+			snapshot = jobfilter(snapshot)
 			ctx.count += 1
-			db.update(snapshot, active=True)
+			updateall(snapshot, active=True)
 		return 0
 
 	def history(args):
@@ -592,16 +761,16 @@ def main(args):
 				# Given args, do a one-time pass over each named file
 				w = HistoryWatcher(arg, interval=None, hooks=hooks)
 				for snapshot in w:
-					snapshot = adfilter(snapshot)
+					snapshot = jobfilter(snapshot)
 					ctx.count += 1
-					db.update(snapshot, active=False)
+					updateall(snapshot, active=False)
 		else:
 			file = cfg.get('condor', 'historyfile')
 			w = HistoryWatcher(file, interval=interval, hooks=hooks)
 			for snapshot in w:
-				snapshot = adfilter(snapshot)
+				snapshot = jobfilter(snapshot)
 				ctx.count += 1
-				db.update(snapshot, active=False)
+				updateall(snapshot, active=False)
 		return 0
 
 	if cmd == 'printconf':
