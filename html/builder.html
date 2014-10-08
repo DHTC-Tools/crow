@@ -1,14 +1,55 @@
-<script src="//code.jquery.com/jquery-2.1.1.min.js"></script>
+<html><head>
+	<title>Crow query builder</title>
+	<script src="//code.jquery.com/jquery-2.1.1.min.js"></script>
+</head>
+<body>
 
-Pool: <select id="pool"></select><br/>
-Group by: <select id="groupby"></select><br/>
-Relation: <select id="rel"></select><br/>
-Width: <input id="width"></input><br/>
-Height: <input id="height"></input><br/>
-Start time/date: <input id="start"></input>  (try values like "Sep 15", "6am". All times are UTC.)<br/>
-End time/date: <input id="end"></input><br/>
-Hours: <input id="hours"></input><br/>
-Minimum bin width: <input id="minbin"></input><br/>
+<style>
+body {
+	font-family: "HelveticaNeueBlack", "HelveticaNeue-Black", "Helvetica Neue Black", "HelveticaNeueHeavy", "HelveticaNeue-Heavy", "Helvetica Neue Heavy", "HelveticaNeueBold", "HelveticaNeue-Bold", "Helvetica Neue Bold", "HelveticaNeue", "Helvetica Neue", 'TeXGyreHerosBold', "Arial Black", sans-serif;
+	background-color: #111;
+	color: #ddd;
+}
+a {
+	color: #ccf;
+}
+#moon {
+	margin: auto;
+	position: absolute; 
+	display: block;
+	background-color: #dee; 
+	top: 0;
+	right: 0;
+	transform: translate(35%, -35%);
+	width: 350px;
+	height: 350px;
+	border-radius: 175px;
+	z-index: -5;
+}
+#swoop {
+	position: absolute; 
+	top: 0;
+	right: 0;
+	width: 150px;
+	height: 150px;
+	z-index: 10;
+}
+</style>
+
+<div id="moon"></div>
+<img id="swoop" src="swoop.png"></img>
+
+<table>
+<tr><td>Pool:</td><td><select id="pool"></select></td></tr>
+<tr><td>Group by:</td><td><select id="groupby"></select></td></tr>
+<tr><td>Relation:</td><td><select id="rel"></select></td></tr>
+<tr><td>Width:</td><td><input id="width"></input>  (defaults to window size)</td></tr>
+<tr><td>Height:</td><td><input id="height"></input>  (defaults to window size)</td></tr>
+<tr><td>Start time/date:</td><td><input id="start"></input>  (try values like "Sep 15", "6am". All times are UTC.)</td></tr>
+<tr><td>End time/date:</td><td><input id="end"></input>  (you can use start or end, not both. Use hours instead.)</td></tr>
+<tr><td>Hours:</td><td><input id="hours"></input></td></tr>
+<tr><td>Minimum bin width:</td><td><input id="minbin"></input>  (in pixels: for auto-scaling of results)</td></tr>
+</table>
 
 <br/>
 
@@ -20,7 +61,7 @@ var baseURL = 'http://visualize.ci-connect.net/crow/jobchart.html'; //?brand=osg
 var params = {
 	pool: ['osg'],
 	groupby: ['user', 'project'],
-	rel: ['running', 'submitted', 'started', 'finished', 'ilija'],
+	rel: ['running', 'submitted', 'started', 'finished'],
 	width: null,
 	height: null,
 	start: null,
@@ -79,3 +120,6 @@ $(document).ready(function () {
 	init();
 });
 </script>
+
+</body>
+</html>
