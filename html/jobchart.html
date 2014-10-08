@@ -50,6 +50,16 @@
 	margin: auto;
 	display: block;
 	z-index: 10 !important;
+	max-width: 220px;
+	max-height: 220px;
+}
+#flying img.failed {
+	width: 100px;
+	height: 100px;
+	position: absolute;
+	top: 30px;
+	left: 50%;
+	transform: scaleY(-1) translateX(-50%);
 }
 p.credit a {
 	color: #ccf;
@@ -78,7 +88,7 @@ p.credit a {
 	line-height: 100%;
 	padding: 0;
 }
-#flying span.working {
+#flying span.status {
 	color: #888;
 	font-size: 200%;
 	line-height: 100%;
@@ -90,9 +100,9 @@ p.credit a {
 	<div id="moon"></div>
 	<img src="flying.gif"></img>
 	<div class="status">
-		<span class="name">Crow</span>
+		<span class="name">crow</span>
 		<br/>
-		<span class="working">is scavenging data</span>
+		<span class="status">is scavenging data</span>
 	</div>
 	<p class="credit">Flying raven by <a href="http://jesseth.deviantart.com/">Jessie Mollodovsky</a></p>
 </div>
@@ -178,6 +188,12 @@ p.credit a {
 				} }
 		}; 
 
+		var failtimer = setTimeout(function () {
+			$('#flying img').attr('src', 'standing.png').addClass('failed');
+			$('#moon').css('background-color', '#c00');
+			$('span.status').html('has failed. probably.');
+		}, 45000);
+
 		// why? $.ajaxSetup({async: false});
 		$.ajax({
 			type: "POST",
@@ -198,6 +214,7 @@ p.credit a {
 			contentType: "application/json; charset=utf-8",
 			dataType: "json",
 			success: function(data) {
+				clearTimeout(failtimer);
 				$('#idGraphSpace').show();
 				options.series = data.plot;
 				chart = new Highcharts.Chart(options); 
@@ -215,20 +232,20 @@ p.credit a {
 
 		// get title elements
 		var name = $('.name');
-		var working = $('.working');
+		var status = $('span.status');
 
 		// get ratio of name's width to font size
 		name.css('font-size', '200%');
 		var r = name.width() / 200.0;
 
-		// compute ratio of working's width to that ratio
-		var sz = working.width() / r;
+		// compute ratio of status's width to that ratio
+		var sz = status.width() / r;
 		// and set the f-s to that value
 		name.css('font-size', '' + sz + '%');
 
 		// do it again for fine adjustments
 		var r = name.width() / sz;
-		var sz = working.width() / r;
+		var sz = status.width() / r;
 		name.css('font-size', '' + sz + '%');
 
 		load();
