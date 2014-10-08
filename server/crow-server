@@ -64,7 +64,8 @@ def tconv(s):
 
 
 class Config(ConfigParser.RawConfigParser):
-	pass
+	def getlist(self, section, option):
+		return [x.strip() for x in self.get(section, option).split(',')]
 
 
 class timer(object):
@@ -111,10 +112,11 @@ class crowhandler(object):
 		return self.post(log, *args, **kwargs)
 
 
-	def getDB(self, x):
-		name = self.app.config.get('db', 'database') % {'brand': x}
-		if hasattr(self.app.mongoclient, name):
-			db = getattr(self.app.mongoclient, name)
+	def getDB(self, pool):
+		dbserver, _ = self.app.config.getlist('db', 'default')
+		client = pymongo.MongoClient(dbserver)
+		if hasattr(mongoclient, pool):
+			db = getattr(self.app.mongoclient, pool)
 			if hasattr(db, 'jobs'):
 				return db.jobs
 		return None
@@ -346,13 +348,7 @@ class crowmw(object):
 	exposed = True
 
 	def __init__(self, config):
-		host = socket.gethostname()
-		if config.has_section(host + ':db'):
-			dbserver = config.get(host + ':db', 'server')
-		else:
-			dbserver = config.get('db', 'server')
 		self.config = config
-		self.mongoclient = pymongo.MongoClient(dbserver)
 		self.distincts = distincts(self)
 		self.starts = starts(self)
 
