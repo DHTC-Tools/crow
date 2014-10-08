@@ -141,7 +141,7 @@ class starts(crowhandler):
 			'rel': 'running',
 			'start': 'default',
 			'end': 'default',
-			'hours': 24,
+			'hours': 0,
 			'bins': 0,
 		})
 
@@ -253,8 +253,10 @@ class starts(crowhandler):
 		t = timer().start()
 		series = rows.distinct('latest.' + params.groupby) 
 		pData = {}
+		totals = {}
 		for p in series:
 			pData[p] = []
+			totals[p] = 0
 			for b in range(params.bins):
 				binstart = startTime + (b * binwidth)
 				pData[p].append([binstart * 1000, 0])
@@ -263,6 +265,7 @@ class starts(crowhandler):
 		t = timer().start()
 		for r in rows:
 			group = r['latest'][params.groupby]
+			totals[group] += 1
 			stime = r['latest'][rel[params.rel][1]]
 			if 'CompletionDate' in r['latest']:
 				etime = r['latest']['CompletionDate']
@@ -278,13 +281,10 @@ class starts(crowhandler):
 		log('t(binning) = %.5fs' % t.check())
 
 		# not sure why yet but some of these groups come up with zero counts
-		totals = {}
 		for group in list(pData.keys()):
 			total = sum([pData[group][x][1] for x in range(len(pData[group]))])
 			if total == 0:
 				del pData[group]
-			else:
-				totals[group] = total
 
 		for p in series:
 			if p in pData:
