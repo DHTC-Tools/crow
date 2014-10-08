@@ -5,11 +5,9 @@
 # cat d.json 
 # { "method" : "guru.test", "params" : [ "Guru" ], "id" : 123 }
 # curl -H "Accept: application/json" -X post "http://db.mwt2.org:8080/ips"
-# curl	-H "Accept: application/json" -X post "http://db.mwt2.org:8080/network?source=MWT2&destination=AGLT2"
-
-# curl	-H "Accept: application/json" -X post "http://db.mwt2.org:8080/distincts?hours=123
-
-# curl	-H "Accept: application/json" -H "Content-Type: application/json" -d @d.json "http://db.mwt2.org:8080/general"
+# curl -H "Accept: application/json" -X post "http://db.mwt2.org:8080/network?source=MWT2&destination=AGLT2"
+# curl -H "Accept: application/json" -X post "http://db.mwt2.org:8080/distincts?hours=123
+# curl -H "Accept: application/json" -H "Content-Type: application/json" -d @d.json "http://db.mwt2.org:8080/general"
 
 import os
 import sys
@@ -19,9 +17,9 @@ import urllib2
 import socket
 import string
 import time
+import ConfigParser
 
-from pymongo import MongoClient
-from bson.json_util import dumps
+import pymongo
 import cherrypy
 
 # Ensure that all operations are done in UTC
@@ -65,6 +63,10 @@ def tconv(s):
 		return _(ptm)
 
 
+class Config(ConfigParser.RawConfigParser):
+	pass
+
+
 class timer(object):
 	def __init__(self):
 		self._start = None
@@ -105,12 +107,12 @@ class crowhandler(object):
 		def log(msg):
 			print '[%.3f %s] %s' % (time.time(), reqid, msg)
 			sys.stdout.flush()
-		log('request to ' + self.__class__.__name__)
+		log('request to /' + self.__class__.__name__)
 		return self.post(log, *args, **kwargs)
 
 
 	def getDB(self, x):
-		name = 'crow_' + x
+		name = self.app.config.get('db', 'database') % {'brand': x}
 		if hasattr(self.app.mongoclient, name):
 			db = getattr(self.app.mongoclient, name)
 			if hasattr(db, 'jobs'):
@@ -274,8 +276,8 @@ class starts(crowhandler):
 			first, last = rel[params.rel][0](stime, etime)
 			if first < 0:
 				first = 0
-			if last >= params.bins:
-				last = params.bins - 1
+			if last > params.bins:
+				last = params.bins
 			for b in range(first, last+1):
 				pData[group][b][1] += 1
 		log('t(binning) = %.5fs' % t.check())
@@ -330,15 +332,43 @@ class crowmw(object):
 	'''Crow middleware'''
 	exposed = True
 
-	def __init__(self, mongoclient):
-		self.mongoclient = mongoclient
+	def __init__(self, config):
+		host = socket.gethostname()
+		if config.has_section(host + ':db'):
+			dbserver = config.get(host + ':db', 'server')
+		else:
+			dbserver = config.get('db', 'server')
+		self.config = config
+		self.mongoclient = pymongo.MongoClient(dbserver)
 		self.distincts = distincts(self)
 		self.starts = starts(self)
 
 
 if __name__ == '__main__':	  
 	# cherrypy.tools.CORS = cherrypy.Tool('before_finalize', CORS)
+
+	cfg = Config()
+
+	# Read .ini file from relative to $0
+	base = os.path.basename(sys.argv[0])
+	home = os.path.dirname(sys.argv[0])
+	parent = os.path.dirname(home)
+	if os.path.split(home)[-1] == 'bin':
+		home = parent
+	if os.path.exists(os.path.join(parent, 'etc')):
+		home = parent
+
+	file = 'crow.ini'
+	for path in ('/etc', file), (home, 'etc', file), (home, file):
+		file = os.path.join(*path)
+		#print 'Trying %s ...' % file
+		cfg.read(file)
+
+	file = base + '.ini'
+	for path in ('/etc', file), (home, 'etc', file), (home, file):
+		file = os.path.join(*path)
+		#print 'Trying %s ...' % file
+		cfg.read(file)
+
 	cherrypy.config.update({'tools.log_headers.on': False})
-	print cherrypy.config
-	client = MongoClient('localhost', 27017)
-	cherrypy.quickstart(crowmw(client), '/', '/web/crow/server/crow-server.conf')
+	cherrypy.quickstart(crowmw(cfg), '/', '/web/crow/server/crow-server.conf')
