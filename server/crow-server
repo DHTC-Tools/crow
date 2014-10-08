@@ -120,6 +120,67 @@ class crowhandler(object):
 		return None
 
 
+	def mongofilter(self, f, expr):
+		if ',' in expr:
+			users = expr.split(',')
+			return {'$or': [f(user) for user in users]}
+		else:
+			return f(expr)
+
+	@staticmethod
+	def _or(*args):
+		return { '$or': args }
+
+	@staticmethod
+	def _and(*args):
+		return { '$and': args }
+
+	def standardfilter(self, params, startTime, interval):
+		andFilters = [
+			#{'latest.JobStartDate': {'$lt': startTime + interval}},	# jobs that started before interval ended
+		]
+		if (params.project == 'all'):
+			andFilters.append({'latest.ProjectName': {'$exists': True}})
+		else:
+			andFilters.append(self.mongofilter(lambda p: {'latest.ProjectName': p}, params.project))
+
+		if (params.user != 'all'):
+			andFilters.append(self.mongofilter(lambda u: {'latest.User': {'$regex': u + '@*'}}, params.user))
+
+		if (params.task != 'all'):
+			andFilters.append({'latest.ClusterId': int(params.task)})
+
+		select = self._and(
+			self._or(
+				{'latest.CompletionDate': {'$exists': False}}, # select jobs that have not CompletionDate
+				{'latest.CompletionDate': {'$gt': startTime}}, # and the ones that finished after startTime
+			),
+			*andFilters
+		);
+		return select
+
+	def readparams(self, params):
+		params = frob(params)
+		req = cherrypy.request.json
+		for key in params.keys():
+			if key in req:
+				params[key] = type(params[key])(req[key])
+		return params
+
+	def tdomain(self, params):
+		ct = int(time.time())
+		if params.start == 'default' and params.end == 'default':
+			interval = params.hours * 3600
+			startTime = ct - interval
+		elif params.start == 'default':
+			interval = params.hours * 3600
+			startTime = tconv(params.end) - interval
+		else:
+			interval = params.hours * 3600
+			startTime = tconv(params.start)
+		return ct, startTime, interval
+
+
 class starts(crowhandler):
 	exposed = True
 
@@ -134,7 +195,7 @@ class starts(crowhandler):
 	# LastJobLeaseRenewal = 1410041471
 
 	def post(self, log):
-		params = frob({
+		params = self.readparams({
 			'pool': 'default',
 			'project': 'all',
 			'user': 'all',
@@ -147,24 +208,9 @@ class starts(crowhandler):
 			'bins': 0,
 		})
 
-		req = cherrypy.request.json
+		db = self.getDB(params.pool)
 
-		for key in params.keys():
-			if key in req:
-				params[key] = type(params[key])(req[key])
-
-		db = self.getDB(req['pool'])
-
-		ct = int(time.time())
-		if params.start == 'default' and params.end == 'default':
-			interval = params.hours * 3600
-			startTime = ct - interval
-		elif params.start == 'default':
-			interval = params.hours * 3600
-			startTime = tconv(params.end) - interval
-		else:
-			interval = params.hours * 3600
-			startTime = tconv(params.start)
+		ct, startTime, interval = self.tdomain(params)
 		log('interval = %d + %d (%s++)' % (startTime, interval, time.ctime(startTime)))
 
 		if not params.bins:
@@ -176,41 +222,8 @@ class starts(crowhandler):
 			params.bins += 1
 			startTime -= (startTime % 3600)
 
-		def _or(*args):
-			return { '$or': args }
-		def _and(*args):
-			return { '$and': args }
-
 		# need to tune the db selection based on $rel
-
-		andFilters = [
-			#{'latest.JobStartDate': {'$lt': startTime + interval}},	# jobs that started before interval ended
-		]
-		if (params.project == 'all'):
-			andFilters.append({'latest.ProjectName': {'$exists': True}})
-		else:
-			andFilters.append(mongofilter(lambda u: {'latest.ProjectName': p}, params.project))
-
-		def mongofilter(f, expr):
-			if ',' in expr:
-				users = expr.split(',')
-				return {'$or': [f(user) for user in users]}
-			else:
-				return f(expr)
-
-		if (params.user != 'all'):
-			andFilters.append(mongofilter(lambda u: {'latest.User': {'$regex': u + '@*'}}, params.user))
-
-		if (params.task != 'all'):
-			andFilters.append({'latest.ClusterId': int(params.task)})
-
-		select = _and(
-			_or(
-				{'latest.CompletionDate': {'$exists': False}}, # select jobs that have not CompletionDate
-				{'latest.CompletionDate': {'$gt': startTime}}, # and the ones that finished after startTime
-			),
-			*andFilters
-		);
+		select = self.standardfilter(params, startTime, interval)
 
 		t = timer().start()
 		rows = db.find(
@@ -278,7 +291,7 @@ class starts(crowhandler):
 				first = 0
 			if last > params.bins:
 				last = params.bins
-			for b in range(first, last+1):
+			for b in range(first, last):
 				pData[group][b][1] += 1
 		log('t(binning) = %.5fs' % t.check())
 
