@@ -267,7 +267,7 @@ class CrowDB(object):
 
 	# Given a job description (snapshot), ensure that the job is up to
 	# date in the database by updating or inserting records as needed.
-	def update(self, job):
+	def update(self, job, active=None):
 		jobid = job['GlobalJobId']
 		hash = self.jobhash(job)
 
@@ -339,9 +339,14 @@ class CrowMongo(CrowDB):
 	def jobhistory(self, jobid, jobent):
 		return jobent['history']
 
-	def setlatest(self, jobid, job, hash):
-		self.db.jobs.update({'_id': jobid}, {'$set': {'latest': job}})
-		self.db.jobs.update({'_id': jobid}, {'$set': {'latestid': hash}})
+	def setlatest(self, jobid, job, hash, active=None):
+		set = {
+			'latest': job,
+			'latestid': hash,
+		}
+		if active is not None:
+			set['active'] = active
+		self.db.jobs.update({'_id': jobid}, {'$set': set}})
 
 	def addhistory(self, jobid, jobent, job, hash):
 		hist = self.jobhistory(jobid, jobent) + [hash]
@@ -353,18 +358,21 @@ class CrowMongo(CrowDB):
 			pass
 		self.db.jobs.update({'_id': jobid}, {'$set': {'history': hist}})
 
-	def addjob(self, jobid, job, hash):
+	def addjob(self, jobid, job, hash, active=False):
+		if active is None:
+			active = False
 		jobent = {
 			'_id': jobid,
 			'history': [],
 			'latest': job,
 			'latestid': hash,
+			'active': active,
 		}
 		self.db.jobs.insert(jobent)
 
 
 class CrowDebug(CrowDB):
-	def update(self, job):
+	def update(self, job, active=none):
 		print job['GlobalJobId'], '(%d classads)' % len(job.keys())
 
 
@@ -574,7 +582,7 @@ def main(args):
 		for snapshot in w:
 			snapshot = adfilter(snapshot)
 			ctx.count += 1
-			db.update(snapshot)
+			db.update(snapshot, active=True)
 		return 0
 
 	def history(args):
@@ -586,14 +594,14 @@ def main(args):
 				for snapshot in w:
 					snapshot = adfilter(snapshot)
 					ctx.count += 1
-					db.update(snapshot)
+					db.update(snapshot, active=False)
 		else:
 			file = cfg.get('condor', 'historyfile')
 			w = HistoryWatcher(file, interval=interval, hooks=hooks)
 			for snapshot in w:
 				snapshot = adfilter(snapshot)
 				ctx.count += 1
-				db.update(snapshot)
+				db.update(snapshot, active=False)
 		return 0
 
 	if cmd == 'printconf':
