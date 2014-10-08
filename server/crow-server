@@ -165,7 +165,7 @@ class starts(crowhandler):
 		else:
 			interval = params.hours * 3600
 			startTime = tconv(params.start)
-		log('startTime=%d (%s) + %d' % (startTime, time.ctime(startTime), interval))
+		log('interval = %d + %d (%s++)' % (startTime, interval, time.ctime(startTime)))
 
 		if not params.bins:
 			params.bins = params.hours
