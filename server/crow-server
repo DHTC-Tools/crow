@@ -1,0 +1,387 @@
+#!/usr/bin/env python
+
+# curl -H 'Content-Type: application/json' -d @d.json "http://db.mwt2.org:8080/" 
+# curl -H 'Content-Type: application/json' -d @d.json "http://db.mwt2.org:8080/trace"
+# cat d.json 
+# { "method" : "guru.test", "params" : [ "Guru" ], "id" : 123 }
+# curl -H "Accept: application/json" -X post "http://db.mwt2.org:8080/ips"
+# curl -H "Accept: application/json" -X post "http://db.mwt2.org:8080/network?source=MWT2&destination=AGLT2"
+# curl -H "Accept: application/json" -X post "http://db.mwt2.org:8080/distincts?hours=123
+# curl -H "Accept: application/json" -H "Content-Type: application/json" -d @d.json "http://db.mwt2.org:8080/general"
+
+import os
+import sys
+import random
+import hashlib
+import urllib2
+import socket
+import string
+import time
+import ConfigParser
+
+import pymongo
+import cherrypy
+
+# Ensure that all operations are done in UTC
+os.environ['TZ'] = 'UTC'
+time.tzset()
+
+try:
+	import parsedatetime
+	pdt = parsedatetime.Calendar()
+except ImportError:
+	pdt = None
+
+def tconv(s):
+	'''Converts time string to Epoch seconds (int).
+	If parsedatetime available, we can convert various English
+	expressions of time.  If not, we can only convert Epoch
+	seconds as a string to Epoch seconds as int.
+	'''
+
+	try:
+		return int(s)
+	except ValueError:
+		tm, mode = pdt.parse(s)
+		ptm = list(tm)
+		tmnow = list(time.gmtime())
+
+		def _(tm):
+			if mode == 1:
+				tm = tm[:3] + [0, 0, 0] + tm[6:]
+				# if future, subtract a year
+				if time.mktime(tm) > time.mktime(tmnow):
+					tm[0] -= 1
+					return _(tm)
+			if mode == 2:
+				tm = tmnow[:3] + tm[3:]
+				# if future, subtract a day
+				if time.mktime(tm) > time.mktime(tmnow):
+					return time.mktime(tm) - 86400
+			return time.mktime(tm)
+
+		return _(ptm)
+
+
+class Config(ConfigParser.RawConfigParser):
+	pass
+
+
+class timer(object):
+	def __init__(self):
+		self._start = None
+
+	def start(self):
+		self._start = time.time()
+		return self
+
+	def check(self):
+		return time.time() - self._start
+
+	def stop(self):
+		self._stop = time.time()
+		return self._stop - self._start
+
+
+class frob(dict):
+	def __getattr__(self, key):
+		return self[key]
+	def __setattr__(self, key, value):
+		self[key] = value
+
+
+class crowhandler(object):
+	def __init__(self, app):
+		self.app = app
+		_ = hashlib.md5()
+		_.update(str(time.time()) + str(id(self)))
+		self.instance = _.hexdigest()[:8]
+		self.req = 0
+
+	@cherrypy.tools.accept(media='application/json')
+	@cherrypy.tools.json_out()
+	@cherrypy.tools.json_in()
+	def POST(self, *args, **kwargs):
+		self.req += 1
+		reqid = self.instance + '.' + str(self.req)
+		def log(msg):
+			print '[%.3f %s] %s' % (time.time(), reqid, msg)
+			sys.stdout.flush()
+		log('request to /' + self.__class__.__name__)
+		return self.post(log, *args, **kwargs)
+
+
+	def getDB(self, x):
+		name = self.app.config.get('db', 'database') % {'brand': x}
+		if hasattr(self.app.mongoclient, name):
+			db = getattr(self.app.mongoclient, name)
+			if hasattr(db, 'jobs'):
+				return db.jobs
+		return None
+
+
+	def mongofilter(self, f, expr):
+		if ',' in expr:
+			users = expr.split(',')
+			return {'$or': [f(user) for user in users]}
+		else:
+			return f(expr)
+
+	@staticmethod
+	def _or(*args):
+		return { '$or': args }
+
+	@staticmethod
+	def _and(*args):
+		return { '$and': args }
+
+	def standardfilter(self, params, startTime, interval):
+		andFilters = [
+			#{'latest.JobStartDate': {'$lt': startTime + interval}},	# jobs that started before interval ended
+		]
+		if (params.project == 'all'):
+			andFilters.append({'latest.ProjectName': {'$exists': True}})
+		else:
+			andFilters.append(self.mongofilter(lambda p: {'latest.ProjectName': p}, params.project))
+
+		if (params.user != 'all'):
+			andFilters.append(self.mongofilter(lambda u: {'latest.User': {'$regex': u + '@*'}}, params.user))
+
+		if (params.task != 'all'):
+			andFilters.append({'latest.ClusterId': int(params.task)})
+
+		select = self._and(
+			self._or(
+				{'latest.CompletionDate': {'$exists': False}}, # select jobs that have not CompletionDate
+				{'latest.CompletionDate': {'$gt': startTime}}, # and the ones that finished after startTime
+			),
+			*andFilters
+		);
+		return select
+
+	def readparams(self, params):
+		params = frob(params)
+		req = cherrypy.request.json
+		for key in params.keys():
+			if key in req:
+				params[key] = type(params[key])(req[key])
+		return params
+
+	def tdomain(self, params):
+		ct = int(time.time())
+		if params.start == 'default' and params.end == 'default':
+			interval = params.hours * 3600
+			startTime = ct - interval
+		elif params.start == 'default':
+			interval = params.hours * 3600
+			startTime = tconv(params.end) - interval
+		else:
+			interval = params.hours * 3600
+			startTime = tconv(params.start)
+		return ct, startTime, interval
+
+
+class starts(crowhandler):
+	exposed = True
+
+	# QDate = 1410041462
+	# JobCurrentStartDate = 1410041468
+	# JobStartDate = 1410041468
+	# LastMatchTime = 1410041468
+	# JobCurrentStartExecutingDate = 1410041470
+	# CompletionDate = 1410041471
+	# EnteredCurrentStatus = 1410041471
+	# JobFinishedHookDone = 1410041471
+	# LastJobLeaseRenewal = 1410041471
+
+	def post(self, log):
+		params = self.readparams({
+			'pool': 'default',
+			'project': 'all',
+			'user': 'all',
+			'task': 'all',
+			'groupby': 'ProjectName',
+			'rel': 'running',
+			'start': 'default',
+			'end': 'default',
+			'hours': 0,
+			'bins': 0,
+		})
+
+		db = self.getDB(params.pool)
+
+		ct, startTime, interval = self.tdomain(params)
+		log('interval = %d + %d (%s++)' % (startTime, interval, time.ctime(startTime)))
+
+		if not params.bins:
+			params.bins = params.hours
+		binwidth = interval / params.bins
+
+		if startTime % 3600:
+			# if not an exact hour boundary, do one extra bin
+			params.bins += 1
+			startTime -= (startTime % 3600)
+
+		# need to tune the db selection based on $rel
+		select = self.standardfilter(params, startTime, interval)
+
+		t = timer().start()
+		rows = db.find(
+			select,
+			{
+				'latest.QDate': 1,
+				'latest.JobStatus': 1,
+				'latest.ProjectName': 1,
+				'latest.JobStartDate': 1,
+				'latest.CompletionDate': 1,
+				'latest.User': 1,
+				'latest.ClusterId': 1,
+				'latest.Owner': 1,
+			})
+		log('t(mongodb) = %.5fs' % t.check())
+
+		result = {}
+		result['plot'] = []
+
+		_running = lambda stime, etime: \
+		                  (int((stime - startTime) / binwidth),
+			               int((etime - startTime) / binwidth))
+
+		_started = lambda stime, etime: \
+		                  (int((stime - startTime) / binwidth),
+			               int((stime - startTime) / binwidth))
+
+		_finished = lambda stime, etime: \
+		                   (int((etime - startTime) / binwidth),
+			                int((etime - startTime) / binwidth))
+
+		rel = {
+			'default': (_running, 'JobStartDate'),
+			'running': (_running, 'JobStartDate'),
+			'started': (_started, 'JobStartDate'),
+			'finished': (_finished, 'JobStartDate'),
+			'submitted': (_started, 'QDate'),
+		}
+
+		# aggregate, slice, chop, dice, puree
+
+		t = timer().start()
+		series = rows.distinct('latest.' + params.groupby) 
+		pData = {}
+		totals = {}
+		for p in series:
+			pData[p] = []
+			totals[p] = 0
+			for b in range(params.bins):
+				binstart = startTime + (b * binwidth)
+				pData[p].append([binstart * 1000, 0])
+		log('t(distinct) %.5fs' % t.check())
+
+		t = timer().start()
+		for r in rows:
+			group = r['latest'][params.groupby]
+			totals[group] += 1
+			stime = r['latest'][rel[params.rel][1]]
+			if 'CompletionDate' in r['latest']:
+				etime = r['latest']['CompletionDate']
+			else:
+				etime = ct
+			first, last = rel[params.rel][0](stime, etime)
+			if first < 0:
+				first = 0
+			if last > params.bins:
+				last = params.bins
+			for b in range(first, last):
+				pData[group][b][1] += 1
+		log('t(binning) = %.5fs' % t.check())
+
+		# not sure why yet but some of these groups come up with zero counts
+		for group in list(pData.keys()):
+			total = sum([pData[group][x][1] for x in range(len(pData[group]))])
+			if total == 0:
+				del pData[group]
+
+		for p in series:
+			if p in pData:
+				ser = {}
+				ser['name'] = p + ' (' + str(totals[p]) + ')'
+				ser['data'] = pData[p]
+				result['plot'].append(ser)
+
+		return result
+
+
+class distincts(crowhandler):
+	exposed = True
+	@cherrypy.tools.accept(media='application/json')
+	@cherrypy.tools.json_out()
+	@cherrypy.tools.json_in()
+
+	def post(self, log):
+		req = cherrypy.request.json
+
+		db = self.getDB(req['pool'])
+
+		interval = 720 * 3600
+		if 'interval' in req:
+			interval = req['interval'] * 3600
+
+		ret = {}
+		ret['Tasks'] = []
+		ret['ProjectNames'] = []
+		startTime = int(time.time())-int(interval)
+		rows = db.find({'latest.CompletionDate': {'$gt': startTime}},{'latest.ProjectName': 1,'latest.User': 1,'latest.ClusterId': 1,'latest.Owner': 1})
+		ret['ProjectNames'] = rows.distinct('latest.ProjectName')
+		ret['Tasks'] = rows.distinct('latest.ClusterId')
+		ret['Users'] = rows.distinct('latest.User')
+		ret['Owners'] = rows.distinct('latest.Owner')
+		for r in range(len(ret['Users'])):
+			ret['Users'][r] = ret['Users'][r].split('@')[0]
+		# print ret
+		return ret
+
+
+class crowmw(object):
+	'''Crow middleware'''
+	exposed = True
+
+	def __init__(self, config):
+		host = socket.gethostname()
+		if config.has_section(host + ':db'):
+			dbserver = config.get(host + ':db', 'server')
+		else:
+			dbserver = config.get('db', 'server')
+		self.config = config
+		self.mongoclient = pymongo.MongoClient(dbserver)
+		self.distincts = distincts(self)
+		self.starts = starts(self)
+
+
+if __name__ == '__main__':	  
+	# cherrypy.tools.CORS = cherrypy.Tool('before_finalize', CORS)
+
+	cfg = Config()
+
+	# Read .ini file from relative to $0
+	base = os.path.basename(sys.argv[0])
+	home = os.path.dirname(sys.argv[0])
+	parent = os.path.dirname(home)
+	if os.path.split(home)[-1] == 'bin':
+		home = parent
+	if os.path.exists(os.path.join(parent, 'etc')):
+		home = parent
+
+	file = 'crow.ini'
+	for path in ('/etc', file), (home, 'etc', file), (home, file):
+		file = os.path.join(*path)
+		#print 'Trying %s ...' % file
+		cfg.read(file)
+
+	file = base + '.ini'
+	for path in ('/etc', file), (home, 'etc', file), (home, file):
+		file = os.path.join(*path)
+		#print 'Trying %s ...' % file
+		cfg.read(file)
+
+	cherrypy.config.update({'tools.log_headers.on': False})
+	cherrypy.quickstart(crowmw(cfg), '/', '/web/crow/server/crow-server.conf')

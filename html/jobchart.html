@@ -1,0 +1,43 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+	<meta http-equiv="Content-Type" content="text/html; charset=US-ASCII">
+
+	<link rel="stylesheet" type="text/css"
+		href="//code.jquery.com/ui/1.10.3/themes/redmond/jquery-ui.css">
+
+	<script type="text/javascript" language="javascript"
+		src="//code.jquery.com/jquery-1.11.1.min.js"></script>
+	<script src="//code.jquery.com/ui/1.10.3/jquery-ui.js"></script>
+
+	<script type="text/javascript" language="javascript"
+		src="//cdn.datatables.net/1.10.2/js/jquery.dataTables.min.js"></script>
+
+	<script type="text/javascript" language="javascript"
+		src="/assets/js/URI.min.js"></script>
+
+	<script src="//code.highcharts.com/highcharts.js"></script>
+	<!-- script src="//code.highcharts.com/modules/exporting.js" -->
+
+	<link rel="stylesheet" type="text/css" href="crow.css">
+</head>
+<body>
+
+<!-- Loading/status area -->
+<div id="flying">
+	<div id="moon"></div>
+	<img src="flying.gif"></img>
+	<div class="status">
+		<span class="name">crow</span>
+		<br/>
+		<span class="status">is scavenging data</span>
+	</div>
+	<p class="credit">Flying raven by <a href="http://jesseth.deviantart.com/">Jessie Mollodovsky</a></p>
+</div>
+
+<!-- Plot -->
+<div id="crowgraph"></div>
+<script src="jobchart.js"></script>
+
+</body>
+</html>

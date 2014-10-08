@@ -1,0 +1,59 @@
+#!/bin/sh
+#
+# /etc/rc.d/init.d/crow-mw
+#
+# chkconfig: - 64 36
+# description: Crow middleware delivery
+# processname: crow-server
+
+# Source init functions
+. /etc/rc.d/init.d/functions
+
+prog="crow-server"
+
+prefix="/web/crow/server"
+exec_prefix="${prefix}"
+prog_bin="${exec_prefix}/${prog}"
+PIDFILE="/var/run/crow-server.pid"
+
+start()
+{
+       [ -f $PIDFILE ] && echo "Already started" && exit
+       echo -n $"Starting $prog: "
+       $(nohup ${prog_bin} > /var/log/${prog}.log & echo $! 2>&1 > /var/run/${prog}.pid)
+       daemon --pidfile $PIDFILE
+       [ -f $PIDFILE ] && success $"$prog startup" || failure $"$prog startup"
+       echo
+}
+
+stop()
+{
+       echo -n $"Shutting down $prog: "
+       [ -f $PIDFILE ] && killproc $prog || success $"$prog shutdown"
+       echo
+}
+
+case "$1" in
+
+ start)
+   start
+ ;;
+
+ stop)
+   stop
+ ;;
+
+ status)
+       status $prog
+ ;;
+
+ restart)
+   stop
+   start
+ ;;
+
+ *)
+   echo "Usage: $0 {start|stop|restart|status}"
+ ;;
+
+esac
