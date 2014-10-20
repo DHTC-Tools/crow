@@ -98,6 +98,8 @@ class crowhandler(object):
 		_.update(str(time.time()) + str(id(self)))
 		self.instance = _.hexdigest()[:8]
 		self.req = 0
+		self.dbserver, _ = self.app.config.getlist('db', 'default')
+		self.client = pymongo.MongoClient(self.dbserver)
 
 	@cherrypy.tools.accept(media='application/json')
 	@cherrypy.tools.json_out()
@@ -115,10 +117,8 @@ class crowhandler(object):
 	def getDB(self, pool):
 		if not pool.startswith('crow_'):
 			pool = 'crow_' + pool
-		dbserver, _ = self.app.config.getlist('db', 'default')
-		client = pymongo.MongoClient(dbserver)
-		if hasattr(client, pool):
-			db = getattr(client, pool)
+		if hasattr(self.client, pool):
+			db = getattr(self.client, pool)
 			if hasattr(db, 'jobs'):
 				return db.jobs
 		return None
