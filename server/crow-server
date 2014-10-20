@@ -113,10 +113,12 @@ class crowhandler(object):
 
 
 	def getDB(self, pool):
+		if not pool.startswith('crow_'):
+			pool = 'crow_' + pool
 		dbserver, _ = self.app.config.getlist('db', 'default')
 		client = pymongo.MongoClient(dbserver)
-		if hasattr(mongoclient, pool):
-			db = getattr(self.app.mongoclient, pool)
+		if hasattr(client, pool):
+			db = getattr(client, pool)
 			if hasattr(db, 'jobs'):
 				return db.jobs
 		return None
@@ -155,6 +157,7 @@ class crowhandler(object):
 		select = self._and(
 			self._or(
 				{'latest.CompletionDate': {'$exists': False}}, # select jobs that have not CompletionDate
+				{'latest.CompletionDate': 0}, # select jobs that have not CompletionDate
 				{'latest.CompletionDate': {'$gt': startTime}}, # and the ones that finished after startTime
 			),
 			*andFilters
@@ -181,6 +184,65 @@ class crowhandler(object):
 			interval = params.hours * 3600
 			startTime = tconv(params.start)
 		return ct, startTime, interval
+
+
+class current(crowhandler):
+	exposed = True
+
+	def post(self, log):
+		params = self.readparams({
+			'pool': 'default',
+			'project': 'all',
+			'user': 'all',
+			'task': 'all',
+			'groupby': 'ProjectName',
+		})
+
+		db = self.getDB(params.pool)
+
+		t = timer().start()
+		rows = db.find(
+			self._and(
+				{'latest.QDate': {'$gt': time.time() - (86400 * 14)}},
+				{'latest.JobStatus': {'$in': [0, 1, 2, 5, 7]}},
+			),
+			{
+				'latest.QDate': 1,
+				'latest.JobStatus': 1,
+				'latest.ProjectName': 1,
+				'latest.JobStartDate': 1,
+				'latest.CompletionDate': 1,
+				'latest.User': 1,
+				'latest.ClusterId': 1,
+				'latest.Owner': 1,
+			})
+		log('t(mongodb) = %.5fs' % t.check())
+
+		count = 0
+		for r in rows:
+			count += 1
+		log('%d matching jobs' % count)
+
+		result = {
+			'plot': [
+				{
+					'name': 'member1',
+					'data': [
+						[time1, data1],
+						[time2, data2],
+					]
+				},
+				{
+					'name': 'member2',
+					'data': [
+						[time1, data1],
+						[time2, data2],
+					]
+				},
+			]
+		}
+
+		return result
 
 
 class starts(crowhandler):
@@ -241,6 +303,7 @@ class starts(crowhandler):
 				'latest.Owner': 1,
 			})
 		log('t(mongodb) = %.5fs' % t.check())
+		log('selector found %d jobs' % rows.count())
 
 		result = {}
 		result['plot'] = []
@@ -280,10 +343,13 @@ class starts(crowhandler):
 		log('t(distinct) %.5fs' % t.check())
 
 		t = timer().start()
+		keyprop = rel[params.rel][1]
 		for r in rows:
 			group = r['latest'][params.groupby]
-			totals[group] += 1
-			stime = r['latest'][rel[params.rel][1]]
+			if keyprop in r['latest']:
+				stime = r['latest'][keyprop]
+			else:
+				stime = ct+1
 			if 'CompletionDate' in r['latest']:
 				etime = r['latest']['CompletionDate']
 			else:
@@ -293,14 +359,20 @@ class starts(crowhandler):
 				first = 0
 			if last > params.bins:
 				last = params.bins
-			for b in range(first, last):
+			#if first > last:
+			#	print 'anomalous', r['_id']
+			for b in range(first, last+1):
 				pData[group][b][1] += 1
+				totals[group] += 1
 		log('t(binning) = %.5fs' % t.check())
 
-		# not sure why yet but some of these groups come up with zero counts
+		# not sure why yet but some of these groups come up with zero counts.
+		# (this happens when the select finds jobs that binning excludes.)
 		for group in list(pData.keys()):
-			total = sum([pData[group][x][1] for x in range(len(pData[group]))])
-			if total == 0:
+			#total = sum([pData[group][x][1] for x in range(len(pData[group]))])
+			#if total == 0:
+			#	del pData[group]
+			if totals[group] == 0:
 				del pData[group]
 
 		for p in series:
@@ -351,6 +423,7 @@ class crowmw(object):
 		self.config = config
 		self.distincts = distincts(self)
 		self.starts = starts(self)
+		self.current = current(self)
 
 
 if __name__ == '__main__':	  
