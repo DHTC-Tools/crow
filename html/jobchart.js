@@ -118,26 +118,32 @@ function load() {
 	});
 }
 
-$(document).ready(function() {
-	$('#crowgraph').hide();
+$(document).ready(function () {
+	// delay the crow animation by 2s in case response is quick
+	setTimeout(function () {
+		//$('#crowgraph').hide();
+		$('#flying').show();
 
-	// get title elements
-	var name = $('.name');
-	var status = $('span.status');
+		// get title elements
+		var name = $('.name');
+		var status = $('span.status');
 
-	// get ratio of name's width to font size
-	name.css('font-size', '200%');
-	var r = name.width() / 200.0;
+		// get ratio of name's width to font size
+		name.css('font-size', '200%');
+		var r = name.width() / 200.0;
 
-	// compute ratio of status's width to that ratio
-	var sz = status.width() / r;
-	// and set the f-s to that value
-	name.css('font-size', '' + sz + '%');
+		// compute ratio of status's width to that ratio
+		var sz = status.width() / r;
+		// and set the f-s to that value
+		name.css('font-size', '' + sz + '%');
 
-	// do it again for fine adjustments
-	var r = name.width() / sz;
-	var sz = status.width() / r;
-	name.css('font-size', '' + sz + '%');
+		// do it again for fine adjustments
+		var r = name.width() / sz;
+		var sz = status.width() / r;
+		name.css('font-size', '' + sz + '%');
 
+	}, 2000);
+
+	$('#flying').hide();
 	load();
 });
