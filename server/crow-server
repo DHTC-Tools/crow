@@ -118,11 +118,8 @@ class crowhandler(object):
 		if not pool.startswith('crow_'):
 			pool = 'crow_' + pool
 		if hasattr(self.client, pool):
-			db = getattr(self.client, pool)
-			if hasattr(db, 'jobs'):
-				return db.jobs
+			return getattr(self.client, pool)
 		return None
-
 
 	def mongofilter(self, f, expr):
 		if ',' in expr:
@@ -201,7 +198,7 @@ class current(crowhandler):
 		db = self.getDB(params.pool)
 
 		t = timer().start()
-		rows = db.find(
+		rows = db.jobs.find(
 			self._and(
 				{'latest.QDate': {'$gt': time.time() - (86400 * 14)}},
 				{'latest.JobStatus': {'$in': [0, 1, 2, 5, 7]}},
@@ -290,7 +287,7 @@ class starts(crowhandler):
 		select = self.standardfilter(params, startTime, interval)
 
 		t = timer().start()
-		rows = db.find(
+		rows = db.jobs.find(
 			select,
 			{
 				'latest.QDate': 1,
@@ -404,7 +401,7 @@ class distincts(crowhandler):
 		ret['Tasks'] = []
 		ret['ProjectNames'] = []
 		startTime = int(time.time())-int(interval)
-		rows = db.find({'latest.CompletionDate': {'$gt': startTime}},{'latest.ProjectName': 1,'latest.User': 1,'latest.ClusterId': 1,'latest.Owner': 1})
+		rows = db.jobs.find({'latest.CompletionDate': {'$gt': startTime}},{'latest.ProjectName': 1,'latest.User': 1,'latest.ClusterId': 1,'latest.Owner': 1})
 		ret['ProjectNames'] = rows.distinct('latest.ProjectName')
 		ret['Tasks'] = rows.distinct('latest.ClusterId')
 		ret['Users'] = rows.distinct('latest.User')
