@@ -46,7 +46,7 @@ function load() {
 		running: 'Jobs Running',
 		started: 'Jobs Started',
 		finished: 'Jobs Completed',
-		queued: 'Jobs Enqueued',
+		submitted: 'Jobs Submitted',
 	}
 
 	var options = {
@@ -67,7 +67,7 @@ function load() {
 				}
 			},
 			title: { text: '' },
-			xAxis: { type: 'datetime', tickWidth: 0, gridLineWidth: 1, /* title: { text: 'Date' } */ },
+			xAxis: { type: 'datetime', tickWidth: 0, gridLineWidth: 1, title: { text: 'Date/Time' } },
 			yAxis: { title: { text: yLabels[params.rel] } },
 			legend: { align: 'left', verticalAlign: 'top', y: 10, floating: true, borderWidth: 0 },
 			//exporting: {	   buttons: { contextButton: {	text: 'Export' } }, sourceHeight:1050, sourceWidth: 1485	},
@@ -83,7 +83,7 @@ function load() {
 		$('#flying img').attr('src', 'standing.png').addClass('failed');
 		$('#moon').css('background-color', '#c00');
 		$('span.status').html('has failed. probably.');
-	}, 45000);
+	}, 60000);
 
 	// why? $.ajaxSetup({async: false});
 	$.ajax({
