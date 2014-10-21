@@ -18,6 +18,7 @@ import socket
 import string
 import time
 import ConfigParser
+import json
 
 import pymongo
 import cherrypy
@@ -92,6 +93,8 @@ class frob(dict):
 
 
 class crowhandler(object):
+	cacheignores = []
+
 	def __init__(self, app):
 		self.app = app
 		_ = hashlib.md5()
@@ -120,6 +123,38 @@ class crowhandler(object):
 		if hasattr(self.client, pool):
 			return getattr(self.client, pool)
 		return None
+
+	def querykey(self, query):
+		md5 = hashlib.md5()
+		md5.update(self.__class__.__name__)	# method/path, e.g. "starts"
+		for key in sorted(query.keys()):
+			if key in self.cacheignores:
+				continue
+			md5.update(key)
+			md5.update(str(query[key]))
+		return md5.hexdigest()[:8]
+
+	def cached(self, db, query):
+		qkey = self.querykey(query)
+		r = db.cache.find_one({'_id': qkey})
+		if r is None:
+			return None
+		if r['expires'] < time.time():
+			# expired
+			return None
+		return r['data']
+
+	def cache(self, db, query, data, lifetime=15*60):
+		qkey = self.querykey(query)
+		r = db.cache.find_one({'_id': qkey})
+		if r:
+			db.cache.update({'_id': qkey},
+			                {'expires': time.time() + lifetime,
+			                 'data': data})
+		else:
+			db.cache.insert({'_id': qkey,
+			                 'expires': time.time() + lifetime,
+			                 'data': data})
 
 	def mongofilter(self, f, expr):
 		if ',' in expr:
@@ -185,6 +220,12 @@ class crowhandler(object):
 
 class current(crowhandler):
 	exposed = True
+
+	# passing in log is janky, but without a proper handler/request model
+	# in cherrypy it's all we have for now.
+
+	# n.b. width doesn't affect queried data, so ignore that in /current queries
+	cacheignores = ['width']
 
 	def post(self, log):
 		params = self.readparams({
@@ -255,7 +296,12 @@ class starts(crowhandler):
 	# JobFinishedHookDone = 1410041471
 	# LastJobLeaseRenewal = 1410041471
 
+	# n.b. width doesn't affect queried data, so ignore that in /starts queries
+	cacheignores = ['width']
+
 	def post(self, log):
+		#log('initial postdata: %s' % cherrypy.request.json)
+
 		params = self.readparams({
 			'pool': 'default',
 			'project': 'all',
@@ -282,6 +328,16 @@ class starts(crowhandler):
 			# if not an exact hour boundary, do one extra bin
 			params.bins += 1
 			startTime -= (startTime % 3600)
+
+		# cache check
+		t = timer().start()
+		data = self.cached(db, params)
+		if data:
+			r = json.loads(data)
+			log('t(cache check +) = %.5fs' % t.check())
+			return r
+		else:
+			log('t(cache check -) = %.5fs' % t.check())
 
 		# need to tune the db selection based on $rel
 		select = self.standardfilter(params, startTime, interval)
@@ -379,6 +435,9 @@ class starts(crowhandler):
 				ser['data'] = pData[p]
 				result['plot'].append(ser)
 
+		t = timer().start()
+		self.cache(db, params, json.dumps(result))
+		log('t(cache) = %.5fs' % t.check())
 		return result
 
 
