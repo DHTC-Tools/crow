@@ -65,6 +65,21 @@ def tfmt(t):
 class CrowError(Exception):
 	pass
 
+class compoundfunction(list):
+	def __call__(self, *args, **kwargs):
+		for f in self:
+			if f(*args, **kwargs) is False:
+				return False
+		return True
+
+
+class frob(dict):
+	def __getattr__(self, key):
+		return self[key]
+	def __setattr__(self, key, value):
+		self[key] = value
+
+
 class QueueWatcher(object):
 	'''QueueWatcher creates a relationship to a schedd or collector, so
 	that it can be queried for running jobs.'''
@@ -72,7 +87,7 @@ class QueueWatcher(object):
 	def __init__(self, schedd=None, collector=None, hooks={}, interval=30):
 		self.hooks = {
 			'begin': lambda w, jobs: True,
-			'end': lambda w: True,
+			'end': lambda w, jobs: True,
 		}
 		self.hooks.update(hooks)
 		self._interval = interval
@@ -111,8 +126,11 @@ class QueueWatcher(object):
 		return new
 
 
-	def __iter__(self):
+	def watch(self, jobactions):
+		self.hookctx = frob()
 		while True:
+			self.hookctx.count = 0
+
 			try:
 				jobs = self.source.query()
 			except Exception, e:
@@ -125,13 +143,15 @@ class QueueWatcher(object):
 			for job in jobs:
 				try:
 					job = self.stringify(job)
-					yield job
+					self.hookctx.count += 1
+					job = jobactions(job)
 				except Exception, e:
 					print >>sys.stderr, str(e)
 
 			if self._interval is None:
 				break
-			if self.hooks['end'](self) is False:
+
+			if self.hooks['end'](self, jobs) is False:
 				break
 			time.sleep(self._interval)
 
@@ -139,9 +159,9 @@ class QueueWatcher(object):
 class HistoryWatcher(object):
 	def __init__(self, file, hooks={}, interval=30):
 		self.hooks = {
-			'begin': lambda w: True,
-			'cycle': lambda w: True,
-			'end': lambda w: True,
+			'begin': lambda w, jobs: True,
+			'cycle': lambda w, jobs: True,
+			'end': lambda w, jobs: True,
 		}
 		self.hooks.update(hooks)
 		self._interval = interval
@@ -152,7 +172,7 @@ class HistoryWatcher(object):
 
 	@staticmethod
 	def parsevalue(value):
-		'''Convert a classad value to a string (without quotes), boolean,
+		'''Convert a classad value to an unquoted string, boolean,
 		int, or float as appropriate.'''
 		if value.startswith('"'):
 			return value.strip('"')
@@ -193,7 +213,9 @@ class HistoryWatcher(object):
 			self._current[ad] = self.parsevalue(value)
 
 
-	def __iter__(self):
+	def watch(self, jobactions):
+		self.hookctx = frob()
+
 		# Wait for history file to become available
 		while not self._fp:
 			try:
@@ -210,6 +232,8 @@ class HistoryWatcher(object):
 
 		s = None
 		while True:
+			self.hookctx.count = 0
+
 			# Make sure history file still exists
 			try:
 				s = os.stat(self._file)
@@ -226,12 +250,13 @@ class HistoryWatcher(object):
 
 			# Ready to read current file
 			if self._fp:
-				if self.hooks['begin'](self) is False:
+				if self.hooks['begin'](self, None) is False:
 					break
-				for snapshot in self.read():
-					yield snapshot
+				for job in self.read():
+					self.hookctx.count += 1
+					job = jobactions(job)
 
-			if self._fp and self.hooks['end'](self) is False:
+			if self._fp and self.hooks['end'](self, None) is False:
 				break
 
 			if self._interval is None:
@@ -243,7 +268,7 @@ class HistoryWatcher(object):
 			# Check whether history file has cycled
 			if s and s.st_ino != inode:
 				# Old file moved, and new history file available
-				if self.hooks['cycle'](self) is False:
+				if self.hooks['cycle'](self, None) is False:
 					break
 				inode = s.st_ino
 				self._fp.close()
@@ -292,9 +317,12 @@ class CrowDB(object):
 			m.update(str(rec[k]))
 		return m.hexdigest()[:16]
 
+	def setopts(self, *args, **kwargs):
+		pass
+
 	# Given a job description (snapshot), ensure that the job is up to
 	# date in the database by updating or inserting records as needed.
-	def update(self, job, active=None):
+	def update(self, job):
 		jobid = job['GlobalJobId']
 		hash = self.jobhash(job)
 
@@ -338,6 +366,43 @@ class CrowDB(object):
 			print '+ adding job %s' % jobid
 			self.addjob(jobid, job, hash)
 
+	def unsee(self, job):
+		'''Mark a job as no longer in queue.'''
+		return False
+
+	def derivetimes(self, job):
+		'''Derives from a job's timestamps and status the key lifecycle
+		event times.  (Dequeue time is the tricky one.)'''
+		t = frob({
+			'queued': 0,      # entered job queue
+			'started': 0,     # first started on worker
+			'completed': 0,   # completed on worker (if completed; removed jobs not complete)
+			'dequeued': 0,    # removed from queue
+			'unobserved': 0,  # first time job known not to be in queue
+			# if unobserved > 0, job is historical. if == 0, it's believed to be in queue
+		})
+		keys = job.keys()
+		if 'QDate' in keys:
+			t.queued = job['QDate']
+		if 'JobStartDate' in keys:
+			t.started = job['JobStartDate']
+		if 'CompletionDate' in keys:
+			t.completed = job['CompletionDate']
+		if t.completed > 0:
+			t.dequeued = t.completed
+		elif t.completed == 0:
+			s = 0
+			if 'JobStatus' in job:
+				s = job['JobStatus']
+			if s in (0, 1, 2, 5):
+				# still in queue
+				pass
+			elif s in (3, 4, 6, 7):
+				# left the building
+				if 'EnteredCurrentStatus' in keys:
+					t.dequeued = job['EnteredCurrentStatus']
+		return t
+
 
 class CrowMongo(CrowDB):
 	'''Implements a MongoDB store for job history that follows the
@@ -378,14 +443,29 @@ class CrowMongo(CrowDB):
 	def jobhistory(self, jobid, jobent):
 		return jobent['history']
 
-	def setlatest(self, jobid, job, hash, active=None):
-		set = {
+	def unsee(self, job):
+		'''Mark a job as no longer in queue.
+		If job already has lifecycle.unobserved, leave it.  But if zero,
+		update with -either- completion time or current time.
+		'''
+		jobid = job['GlobalJobId']
+		jobent = self.db.jobs.find_one({'_id': jobid}, {'lifecycle.unobserved': 1})
+		if jobent is None:
+			return False
+		if jobent['lifecycle']['unobserved']:
+			print 'already'
+			return False
+		updatewith = job['CompletionDate'] or int(time.time())
+		print 'setto', updatewith
+		self.db.jobs.update({'_id': jobid}, {'$set': {'lifecycle.unobserved': updatewith}})
+		return True
+
+	def setlatest(self, jobid, job, hash):
+		self.db.jobs.update({'_id': jobid}, {'$set': {
 			'latest': job,
 			'latestid': hash,
-		}
-		if active is not None:
-			set['active'] = active
-		self.db.jobs.update({'_id': jobid}, {'$set': set}})
+			'lifecycle': self.derivetimes(job),
+		}})
 
 	def addhistory(self, jobid, jobent, job, hash):
 		hist = self.jobhistory(jobid, jobent) + [hash]
@@ -397,26 +477,43 @@ class CrowMongo(CrowDB):
 			pass
 		self.db.jobs.update({'_id': jobid}, {'$set': {'history': hist}})
 
-	def addjob(self, jobid, job, hash, active=False):
-		if active is None:
-			active = False
+	def addjob(self, jobid, job, hash):
 		jobent = {
 			'_id': jobid,
 			'history': [],
+			'lifecycle': self.derivetimes(job),
 			'latest': job,
 			'latestid': hash,
-			'active': active,
 		}
 		self.db.jobs.insert(jobent)
 
+	# XXX not needed
+	def inqueue(self):
+		'''It's possible that this is insane.'''
+		def control(job):
+			def _(onoff):
+				# XXX WRONG
+				self.db.jobs.update({'_id': job['_id']}, {'$set': {'inqueue': onoff}})
+			return _
+		# XXX WRONG
+		inqueue = self.db.jobs.find({'inqueue': True})
+		print 'inqueue:', inqueue.count()
+		for job in inqueue:
+			yield job['latest'], control(job)
 
 class CrowDebug(CrowDB):
 	def __init__(self, *args):
 		self.pprint = __import__('pprint')
+		self.extradebug = False
 
-	def update(self, job, active=none):
+	def setopts(self, *args, **kwargs):
+		if 'level' in kwargs:
+			self.level = kwargs['level']
+
+	def update(self, job):
 		print job['GlobalJobId'], '(%d classads)' % len(job.keys())
-		print self.pprint.pformat(job)
+		if self.level > 1:
+			print self.pprint.pformat(job)
 
 
 ##### Lifted from tanglib
@@ -519,22 +616,40 @@ class preparsed(object):
 		self.value = value
 
 
-class JobFilter(list):
-	'''A JobFilter is a sequence of JobFilters.'''
+class JobAction(list):
+	'''A JobAction is a sequence of JobActions.
+	Each action takes a job (a set of ClassAds) as input, and returns
+	the same job.  It may alter the job in transit; such actions are
+	job filters.
+	'''
 	def __call__(self, job):
-		for filter in self:
-			job = filter(job) or job
+		for action in self:
+			job = action(job) or job
 		return job
 
 
-class NullFilter(JobFilter):
-	'''A job filter that does nothing to the job; a placeholder.'''
+class DBUpdater(JobAction):
+	'''A job action that updates a database with the job.'''
+	def __init__(self, name, db, fromhistory=False):
+		self.name = name
+		self.db = db
+		self.fromhistory = fromhistory	# is this job record from history?
+
+	def __call__(self, job):
+		self.db.update(job)
+		if self.fromhistory:
+			self.db.unsee(job)
+		return job
+
+
+class NullAction(JobAction):
+	'''A job action that does nothing to the job; a placeholder.'''
 	def __call__(self, job):
 		return job
 
 
-class AdFilter(JobFilter):
-	'''A job filter that selects only classads matching a Matcher
+class AdFilter(JobAction):
+	'''A job action that selects only classads matching a Matcher
 	expression.'''
 
 	def __init__(self, rule):
@@ -547,8 +662,8 @@ class AdFilter(JobFilter):
 		return new
 
 
-class EnsureFilter(JobFilter):
-	'''A job filter that ensures certain classads are defined.'''
+class EnsureFilter(JobAction):
+	'''A job action that ensures certain classads are defined.'''
 
 	def __init__(self, ensures):
 		self.ensures = ensures
@@ -639,7 +754,6 @@ def usage(fp=sys.stderr):
 
 
 def main(args):
-	class context(object): pass
 	cfg = Config()
 
 	# Create config using defaults above
@@ -674,13 +788,13 @@ def main(args):
 	databases = []
 
 	brand = cfg.get('crow', 'brand')
-	debug = cfg.getboolean('crow', 'debug')
+	debug = int(cfg.getboolean('crow', 'debug'))
 	detach = cfg.getboolean('crow', 'detach')
 	_interval = None
 
 	for opt, arg in opts:
 		if opt in ('-D', '--debug'):
-			debug = True
+			debug += 1
 		if opt in ('-d', '--database', '--databases', '--db'):
 			databases.append(arg)
 		if opt in ('--detach',):
@@ -696,20 +810,21 @@ def main(args):
 		databases = cfg.getlist('crow', 'db')
 	if not databases:
 		databases = ['default']
+	if databases == ['none']:
+		databases = []
 
 	if not args:
 		return usage()
 	cmd = args.pop(0)
 
-	ctx = context()
-	def begin(*args):
-		ctx.count = 0
+	def begin(w, jobs):
+		w.hookctx.count = 0
 		print '** starting scan (%s)' % (tfmt(time.time()))
 		sys.stdout.flush()
-	def cycle(*args):
+	def cycle(w, jobs):
 		print '** cycled (%s)' % (tfmt(time.time()))
-	def end(*args):
-		print '-- %d jobs processed (%s)' % (ctx.count, tfmt(time.time()))
+	def end(w, jobs):
+		print '-- %d jobs processed (%s)' % (w.hookctx.count, tfmt(time.time()))
 		sys.stdout.flush()
 
 	hooks = {
@@ -731,46 +846,61 @@ def main(args):
 	databases = [(name, CrowDB.open(*dbdefs[name])) for name in databases]
 
 	if debug:
-		databases.insert(0, ('debug', CrowDebug()))
+		d = CrowDebug()
+		d.setopts(level=debug)
+		databases.insert(0, ('debug', d))
 
-	def updateall(snapshot, active=None):
-		for name, db in databases:
-			print name, db
-			db.update(snapshot, active=None)
-
-	jobfilter = JobFilter()
+	jobactions = JobAction()
 	if cfg.has_section('ensure'):
-		jobfilter.append(EnsureFilter.fromconfig(cfg))
+		jobactions.append(EnsureFilter.fromconfig(cfg))
 
 	if cfg.has_option('condor', 'adfilter'):
-		jobfilter.append(AdFilter(cfg.get('condor', 'adfilter') + ' GlobalJobId or'))
+		jobactions.append(AdFilter(cfg.get('condor', 'adfilter') + ' GlobalJobId or'))
+
+	# XXX not needed
+	def checkqueue(w, jobs):
+		'''As a check vs potentially missed updates, collect all jobs
+		in the db which are believed to be in queue.  If they are not
+		in the current job set, mark them as not in queue.'''
+		# XXX delete this after dealing with derived timestamps
+		return
+		# ids of all jobs that are in queue
+		queueids = dict([(job['GlobalJobId'], True) for job in jobs])
+		#print queueids
+		for name, db in databases:
+			#print 'checkqueue', name, db, len(jobs)
+			for job, control in db.inqueue():
+				if job['GlobalJobId'] not in queueids:
+					# flip inqueue property off
+					control(false)
 
 	def queue(args):
+		# Finally, after all filters, add db updaters to jobactions
+		for name, db in databases:
+			jobactions.append(DBUpdater(name, db))
+
 		interval = _interval or cfg.getint('crow', 'queueinterval')
+		# XXX not needed
+		hooks['end'] = compoundfunction([hooks['end'], checkqueue])
 		w = QueueWatcher(interval=interval, hooks=hooks)
-		for snapshot in w:
-			snapshot = jobfilter(snapshot)
-			ctx.count += 1
-			updateall(snapshot, active=True)
+		w.watch(jobactions)
 		return 0
 
 	def history(args):
+		# Finally, after all filters, add db updaters to jobactions
+		for name, db in databases:
+			jobactions.append(DBUpdater(name, db, fromhistory=True))
+
 		interval = _interval or cfg.getint('crow', 'historyinterval')
 		if args:
 			for arg in args:
 				# Given args, do a one-time pass over each named file
 				w = HistoryWatcher(arg, interval=None, hooks=hooks)
-				for snapshot in w:
-					snapshot = jobfilter(snapshot)
-					ctx.count += 1
-					updateall(snapshot, active=False)
+				w.watch(jobactions)
 		else:
 			file = cfg.get('condor', 'historyfile')
 			w = HistoryWatcher(file, interval=interval, hooks=hooks)
-			for snapshot in w:
-				snapshot = jobfilter(snapshot)
-				ctx.count += 1
-				updateall(snapshot, active=False)
+			w.watch(jobactions)
 		return 0
 
 	if cmd == 'printconf':
