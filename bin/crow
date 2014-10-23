@@ -24,6 +24,7 @@ historyinterval = 30
 queueinterval = 60
 detach = true
 db = default
+log = /var/log/crow_%(brand)s_%(mode)s.log
 
 [db]
 default = mongodb://mongodbserver:27017, crow_%(brand)s
@@ -53,6 +54,8 @@ JobStates = (
 	'suspended',
 )
 
+
+
 class Config(ConfigParser.RawConfigParser):
 	def getlist(self, section, option):
 		return [x.strip() for x in self.get(section, option).split(',')]
@@ -65,7 +68,9 @@ def tfmt(t):
 class CrowError(Exception):
 	pass
 
+
 class compoundfunction(list):
+	'''I like this but we're not using it atm.'''
 	def __call__(self, *args, **kwargs):
 		for f in self:
 			if f(*args, **kwargs) is False:
@@ -80,17 +85,123 @@ class frob(dict):
 		self[key] = value
 
 
-class QueueWatcher(object):
-	'''QueueWatcher creates a relationship to a schedd or collector, so
-	that it can be queried for running jobs.'''
+class DriverStack(object):
+	class InappropriateDriverError(CrowError):
+		pass
 
-	def __init__(self, schedd=None, collector=None, hooks={}, interval=30):
+	@classmethod
+	def _try(cls, *args):
+		raise cls.InappropriateDriverError, '%s is a metadriver' % cls.__name__
+
+	@classmethod
+	def open(cls, *args):
+		symbols = globals()
+		for sym, value in symbols.items():
+			if type(value) != type(cls):
+				continue
+			if not issubclass(value, cls):
+				continue
+			try:
+				return value._try(*args)
+			except Exception, e:
+				pass
+		raise cls.InappropriateDriverError, 'no suitable drivers for "%s"' % args[0]
+
+
+class Logger(DriverStack):
+	singleton = None
+
+	def __init__(self, spec):
+		# we can offer multiple log types
+		pass
+
+	def __call__(self, fmt, *args):
+		pass
+
+	@classmethod
+	def NullLogger(cls):
+		if cls.singleton is None:
+			cls.singleton = cls(None)
+		return cls.singleton
+
+
+class FileLogger(Logger):
+	@classmethod
+	def _try(cls, *args):
+		if args[0].startswith('file:'):
+			return cls(*args)
+		if args[0].startswith('/'):
+			return cls(*args)
+		raise cls.InappropriateDriverError, '%s is not a file spec' % args[0]
+
+	def __init__(self, spec):
+		# we could offer other log types
+		self.fp = open(spec, 'w')
+
+	def __call__(self, fmt, *args):
+		if args:
+			print >>self.fp, fmt % args
+		else:
+			print >>self.fp, fmt
+
+	def __del__(self):
+		self.close()
+
+	def close(self):
+		self.fp.close()
+
+
+class FileDescLogger(FileLogger):
+	@classmethod
+	def _try(cls, *args):
+		if args[0].startswith('fd:'):
+			return cls(*args)
+		if args[0].lower() in ('stdout', 'stderr', '-'):
+			return cls(*args)
+		raise cls.InappropriateDriverError, '%s is not a filedesc spec' % args[0]
+
+	def __init__(self, spec):
+		if spec.startswith('fd:'):
+			fd = int(spec[3:])
+			if fd == 1:
+				self.fp = sys.stdout
+				self.close = lambda: None
+			elif fd == 2:
+				self.fp = sys.stderr
+				self.close = lambda: None
+			else:
+				self.fp = os.fdopen(fd, 'w')
+		elif spec.lower() == 'stdout' or spec == '-':
+			self.fp = sys.stdout
+			self.close = lambda: None
+		elif spec.lower() == 'stderr':
+			self.fp = sys.stderr
+			self.close = lambda: None
+
+class Watcher(object):
+	def __init__(self, hooks={}, interval=30, logger=None):
 		self.hooks = {
 			'begin': lambda w, jobs: True,
+			'cycle': lambda w, jobs: True,
 			'end': lambda w, jobs: True,
 		}
 		self.hooks.update(hooks)
-		self._interval = interval
+		self.interval = interval
+
+		if logger is None:
+			logger = Logger.NullLogger()
+		self.log = logger
+
+	def setlog(self, logger):
+		self.log = logger
+
+
+class QueueWatcher(Watcher):
+	'''QueueWatcher creates a relationship to a schedd or collector, so
+	that it can be queried for running jobs.'''
+
+	def __init__(self, schedd=None, collector=None, hooks={}, interval=30, logger=None):
+		Watcher.__init__(self, hooks=hooks, interval=interval, logger=logger)
 
 		if schedd:
 			if not collector:
@@ -134,7 +245,7 @@ class QueueWatcher(object):
 			try:
 				jobs = self.source.query()
 			except Exception, e:
-				print >>sys.stderr, 'crow queue %s: %s (reconnecting)' (time.strftime('%Y%m%dT%H%M%S'), str(e))
+				self.log('crow queue %s: %s (reconnecting)', time.strftime('%Y%m%dT%H%M%S'), str(e))
 				self.reconnect()
 				continue
 
@@ -146,25 +257,19 @@ class QueueWatcher(object):
 					self.hookctx.count += 1
 					job = jobactions(job)
 				except Exception, e:
-					print >>sys.stderr, str(e)
+					self.log(str(e))
 
-			if self._interval is None:
+			if self.interval is None:
 				break
 
 			if self.hooks['end'](self, jobs) is False:
 				break
-			time.sleep(self._interval)
+			time.sleep(self.interval)
 
 
-class HistoryWatcher(object):
-	def __init__(self, file, hooks={}, interval=30):
-		self.hooks = {
-			'begin': lambda w, jobs: True,
-			'cycle': lambda w, jobs: True,
-			'end': lambda w, jobs: True,
-		}
-		self.hooks.update(hooks)
-		self._interval = interval
+class HistoryWatcher(Watcher):
+	def __init__(self, file, hooks={}, interval=30, logger=None):
+		Watcher.__init__(self, hooks=hooks, interval=interval, logger=logger)
 		self._file = file
 		self._current = {}
 		self._fp = None
@@ -224,9 +329,9 @@ class HistoryWatcher(object):
 				self._fp = open(self._file, 'r')
 			except OSError:
 				self._fp = None
-				if self._interval is None:
+				if self.interval is None:
 					return
-				time.sleep(self._interval)
+				time.sleep(self.interval)
 
 		# history file now exists, and is open
 
@@ -240,12 +345,12 @@ class HistoryWatcher(object):
 			except OSError:
 				# no file (yet?)
 				s = None
-			if not s and self._interval is not None:
+			if not s and self.interval is not None:
 				if self._fp:
 					self._fp.close()
 					self._fp = None
 				if not s:
-					time.sleep(self._interval)
+					time.sleep(self.interval)
 					continue
 
 			# Ready to read current file
@@ -259,7 +364,7 @@ class HistoryWatcher(object):
 			if self._fp and self.hooks['end'](self, None) is False:
 				break
 
-			if self._interval is None:
+			if self.interval is None:
 				self._fp.close()
 				break
 
@@ -276,35 +381,23 @@ class HistoryWatcher(object):
 				# no interval delay if file cycles - scan new one immediately
 
 			else:
-				time.sleep(self._interval)
+				time.sleep(self.interval)
 
 
 
-class CrowDB(object):
+class CrowDB(DriverStack):
 	'''Provides a base algorithm for updating a database with job
 	information, abstracted over get/set methods that are implemented
 	by a subclass.  See CrowMongo below for example.'''
 
-	class InappropriateDriverError(CrowError): pass
+	def __init__(self, *args, **kwargs):
+		if 'logger' in kwargs:
+			self.log = kwargs['logger']
+		else:
+			self.log = Logger.NullLogger()
 
-	@classmethod
-	def _try(cls, *args):
-		#self = cls(*args)
-		raise cls.InappropriateDriverError, '%s is a metadriver' % cls.__name__
-
-	@classmethod
-	def open(cls, *args):
-		symbols = globals()
-		for sym, value in symbols.items():
-			if type(value) != type(cls):
-				continue
-			if not issubclass(value, cls):
-				continue
-			try:
-				return value._try(*args)
-			except Exception, e:
-				pass
-		return None
+	def setlog(self, logger):
+		self.log = logger
 
 	@staticmethod
 	def jobhash(rec):
@@ -334,7 +427,7 @@ class CrowDB(object):
 
 			if hash == lhash:
 				# No changes whatsoever.
-				print '+ no change to %s' % jobid
+				self.log('+ no change to %s', jobid)
 
 			# This is odd: condor history gives two 'EnteredCurrentStatus' values.
 			# I don't think it's a problem so long as the later one is second in
@@ -344,7 +437,7 @@ class CrowDB(object):
 
 			elif latest['EnteredCurrentStatus'] == job['EnteredCurrentStatus']:
 				# No change of state.  Simply update latest.
-				print '+ updating %s to latest' % jobid
+				self.log('+ updating %s to latest', jobid)
 				self.setlatest(jobid, job, hash)
 
 			else:
@@ -358,12 +451,12 @@ class CrowDB(object):
 				if latest['JobStatus'] != job['LastJobStatus']:
 					statelog += ' -> ' + JobStates[job['LastJobStatus']]
 				statelog += ' -> ' + JobStates[job['JobStatus']]
-				print '+ augmenting history on %s (state %s at %s)' % \
-				      (jobid, statelog, tfmt(job['EnteredCurrentStatus']))
+				self.log('+ augmenting history on %s (state %s at %s)',
+				         jobid, statelog, tfmt(job['EnteredCurrentStatus']))
 
 		else:
 			# No jobent -> never seen before.  Enter ONLY a jobent, no history.
-			print '+ adding job %s' % jobid
+			self.log('+ adding job %s', jobid)
 			self.addjob(jobid, job, hash)
 
 	def unsee(self, job):
@@ -414,7 +507,9 @@ class CrowMongo(CrowDB):
 			return cls(*args)
 		raise cls.InappropriateDriverError, '%s is not a mongodb database spec' % args[0]
 
-	def __init__(self, *args):
+	def __init__(self, *args, **kwargs):
+		CrowDB.__init__(self, *args, **kwargs)
+
 		addr = args[0]
 		if len(args) > 1:
 			dbname = args[1]
@@ -453,10 +548,8 @@ class CrowMongo(CrowDB):
 		if jobent is None:
 			return False
 		if jobent['lifecycle']['unobserved']:
-			print 'already'
 			return False
 		updatewith = job['CompletionDate'] or int(time.time())
-		print 'setto', updatewith
 		self.db.jobs.update({'_id': jobid}, {'$set': {'lifecycle.unobserved': updatewith}})
 		return True
 
@@ -487,22 +580,16 @@ class CrowMongo(CrowDB):
 		}
 		self.db.jobs.insert(jobent)
 
-	# XXX not needed
-	def inqueue(self):
-		'''It's possible that this is insane.'''
-		def control(job):
-			def _(onoff):
-				# XXX WRONG
-				self.db.jobs.update({'_id': job['_id']}, {'$set': {'inqueue': onoff}})
-			return _
-		# XXX WRONG
-		inqueue = self.db.jobs.find({'inqueue': True})
-		print 'inqueue:', inqueue.count()
-		for job in inqueue:
-			yield job['latest'], control(job)
 
 class CrowDebug(CrowDB):
-	def __init__(self, *args):
+	@classmethod
+	def _try(cls, *args):
+		if args[0] == 'debug':
+			return cls(*args)
+		raise cls.InappropriateDriverError, '%s is not a debug database spec' % args[0]
+
+	def __init__(self, *args, **kwargs):
+		CrowDB.__init__(self, *args, **kwargs)
 		self.pprint = __import__('pprint')
 		self.extradebug = False
 
@@ -511,9 +598,9 @@ class CrowDebug(CrowDB):
 			self.level = kwargs['level']
 
 	def update(self, job):
-		print job['GlobalJobId'], '(%d classads)' % len(job.keys())
+		self.log('%s (%d classads)', job['GlobalJobId'], len(job.keys()))
 		if self.level > 1:
-			print self.pprint.pformat(job)
+			self.log(self.pprint.pformat(job))
 
 
 ##### Lifted from tanglib
@@ -742,190 +829,200 @@ class EnsureFilter(JobAction):
 		return job
 
 
-def usage(fp=sys.stderr):
-	p = os.path.basename(sys.argv[0])
-	s = ' ' * len(p)
-	print >>fp, 'usage: %s [-D|--debug] [-C|--configfile file]' % p
-	print >>fp, '       %s [-d|--database database-uri] [-b|--brand brand]' % s
-	print >>fp, '       %s [--detach] command [args...]' % s
-	print >>fp, '       %s [opts] [-i|--interval interval] queue' % p
-	print >>fp, '       %s [opts] [-i|--interval interval] history [historyfile ...]' % p
-	return 2
+class main(object):
+	def usage(self, fp=sys.stderr):
+		p = os.path.basename(sys.argv[0])
+		s = ' ' * len(p)
+		print >>fp, 'usage: %s [-D|--debug] [-C|--configfile file]' % p
+		print >>fp, '       %s [-d|--database database-uri] [-b|--brand brand]' % s
+		print >>fp, '       %s [--detach] command [args...]' % s
+		print >>fp, '       %s [opts] [-i|--interval interval] queue' % p
+		print >>fp, '       %s [opts] [-i|--interval interval] history [historyfile ...]' % p
+		return 2
 
 
-def main(args):
-	cfg = Config()
+	def __getitem__(self, k):
+		return getattr(self, k)
 
-	# Create config using defaults above
-	import StringIO
-	fp = StringIO.StringIO(DefaultConfig)
-	cfg.readfp(fp)
-	fp.close()
 
-	# Read .ini file from relative to $0
-	base = os.path.basename(sys.argv[0])
-	home = os.path.dirname(sys.argv[0])
-	if os.path.split(home)[-1] == 'bin':
-		home = os.path.join(*os.path.split(home)[:-1])
+	def __call__(self, args):
+		self.cfg = Config()
 
-	file = base + '.ini'
-	for path in ('/etc', file), (home, 'etc', file), (home, file):
-		file = os.path.join(*path)
-		#print 'Trying %s ...' % file
-		cfg.read(file)
+		# Create config using defaults above
+		import StringIO
+		fp = StringIO.StringIO(DefaultConfig)
+		self.cfg.readfp(fp)
+		fp.close()
 
-	try:
-		opts, args = getopt.getopt(args, 'hDC:d:b:i:', ['help', 'debug', 'config=', 'db=', 'database=', 'databases=', 'brand=', 'interval='])
-	except getopt.GetoptError, e:
-		print >>sys.stderr, str(e)
-		print >>sys.stderr
-		return usage()
+		# Read .ini file from relative to $0
+		base = os.path.basename(sys.argv[0])
+		home = os.path.dirname(sys.argv[0])
+		if os.path.split(home)[-1] == 'bin':
+			home = os.path.join(*os.path.split(home)[:-1])
 
-	for opt, arg in opts:
-		if opt in ('-C', '--config'):
-			cfg.read(arg)
+		file = base + '.ini'
+		for path in ('/etc', file), (home, 'etc', file), (home, file):
+			file = os.path.join(*path)
+			#print 'Trying %s ...' % file
+			self.cfg.read(file)
 
-	databases = []
+		try:
+			args = self.getopt(args)
+		except getopt.GetoptError, e:
+			print >>sys.stderr, str(e)
+			print >>sys.stderr
+			return self.usage()
 
-	brand = cfg.get('crow', 'brand')
-	debug = int(cfg.getboolean('crow', 'debug'))
-	detach = cfg.getboolean('crow', 'detach')
-	_interval = None
+		if not args:
+			return self.usage()
+		cmd = args.pop(0)
 
-	for opt, arg in opts:
-		if opt in ('-D', '--debug'):
-			debug += 1
-		if opt in ('-d', '--database', '--databases', '--db'):
-			databases.append(arg)
-		if opt in ('--detach',):
-			detach = True
-		if opt in ('-b', '--brand'):
-			brand = arg
-		if opt in ('-i', '--interval'):
-			_interval = int(arg)
-		if opt in ('-h', '--help'):
-			return usage()
+		def begin(w, jobs):
+			w.hookctx.count = 0
+			w.log('** starting scan (%s)', tfmt(time.time()))
+			sys.stdout.flush()
+		def cycle(w, jobs):
+			w.log('** cycled (%s)', tfmt(time.time()))
+		def end(w, jobs):
+			w.log('-- %d jobs processed (%s)', w.hookctx.count, tfmt(time.time()))
+			sys.stdout.flush()
 
-	if not databases:
-		databases = cfg.getlist('crow', 'db')
-	if not databases:
-		databases = ['default']
-	if databases == ['none']:
-		databases = []
+		self.hooks = {
+			'begin': begin,
+			'cycle': cycle,
+			'end': end,
+		}
 
-	if not args:
-		return usage()
-	cmd = args.pop(0)
+		errs = 0
+		self.dbdefs = {}
+		for name, dbargs in self.cfg.items('db'):
+			# this here replaces %(brand)s in the values in [db] from local vars
+			self.dbdefs[name] = [arg.strip() % self for arg in dbargs.split(',')]
+		for name in self.databases:
+			if name not in self.dbdefs:
+				print >>sys.stderr, 'no database named "%s" in configuration' % name
+				errs += 1
+		if errs:
+			return 10
 
-	def begin(w, jobs):
-		w.hookctx.count = 0
-		print '** starting scan (%s)' % (tfmt(time.time()))
-		sys.stdout.flush()
-	def cycle(w, jobs):
-		print '** cycled (%s)' % (tfmt(time.time()))
-	def end(w, jobs):
-		print '-- %d jobs processed (%s)' % (w.hookctx.count, tfmt(time.time()))
-		sys.stdout.flush()
+		if self.debug:
+			self.databases.insert(0, 'debug')
 
-	hooks = {
-		'begin': begin,
-		'cycle': cycle,
-		'end': end,
-	}
+		jobactions = JobAction()
+		if self.cfg.has_section('ensure'):
+			jobactions.append(EnsureFilter.fromconfig(self.cfg))
 
-	errs = 0
-	dbdefs = {}
-	for name, dbargs in cfg.items('db'):
-		dbdefs[name] = [arg.strip() % locals() for arg in dbargs.split(',')]
-	for name in databases:
-		if name not in dbdefs:
-			print >>sys.stderr, 'no database named "%s" in configuration' % name
-			errs += 1
-	if errs:
-		return 10
-	databases = [(name, CrowDB.open(*dbdefs[name])) for name in databases]
+		if self.cfg.has_option('condor', 'adfilter'):
+			jobactions.append(AdFilter(self.cfg.get('condor', 'adfilter') + ' GlobalJobId or'))
 
-	if debug:
-		d = CrowDebug()
-		d.setopts(level=debug)
-		databases.insert(0, ('debug', d))
+		if cmd == 'printconf':
+			self.cfg.write(sys.stdout)
 
-	jobactions = JobAction()
-	if cfg.has_section('ensure'):
-		jobactions.append(EnsureFilter.fromconfig(cfg))
+		elif cmd == 'queue':
+			self.queue(args, jobactions)
 
-	if cfg.has_option('condor', 'adfilter'):
-		jobactions.append(AdFilter(cfg.get('condor', 'adfilter') + ' GlobalJobId or'))
+		elif cmd == 'history':
+			self.history(args, jobactions)
 
-	# XXX not needed
-	def checkqueue(w, jobs):
-		'''As a check vs potentially missed updates, collect all jobs
-		in the db which are believed to be in queue.  If they are not
-		in the current job set, mark them as not in queue.'''
-		# XXX delete this after dealing with derived timestamps
-		return
-		# ids of all jobs that are in queue
-		queueids = dict([(job['GlobalJobId'], True) for job in jobs])
-		#print queueids
-		for name, db in databases:
-			#print 'checkqueue', name, db, len(jobs)
-			for job, control in db.inqueue():
-				if job['GlobalJobId'] not in queueids:
-					# flip inqueue property off
-					control(false)
+		elif cmd == 'all':
+			# this will be recommended, but not yet -
+			# we need better logging control first. Also better
+			# KeyboardInterrupt handling.
 
-	def queue(args):
-		# Finally, after all filters, add db updaters to jobactions
-		for name, db in databases:
-			jobactions.append(DBUpdater(name, db))
+			pid1 = os.fork()
+			if pid1 == 0:
+				return self.queue(args, jobactions)
+			pid2 = os.fork()
+			if pid2 == 0:
+				return self.history(args, jobactions)
+			if not detach:
+				os.waitpid(pid1)
+				os.waitpid(pid2)
+				return 0
 
-		interval = _interval or cfg.getint('crow', 'queueinterval')
-		# XXX not needed
-		hooks['end'] = compoundfunction([hooks['end'], checkqueue])
-		w = QueueWatcher(interval=interval, hooks=hooks)
-		w.watch(jobactions)
+		else:
+			print >>sys.stderr, 'unknown command:', cmd
+			return self.usage()
+
+
+	def getopt(self, args):
+		opts, args = getopt.getopt(args, 'hDC:d:b:i:l:',
+		                           ['help', 'debug', 'config=', 'db=', 'database=', 'databases=', 'brand=', 'interval=', 'log='])
+
+		for opt, arg in opts:
+			if opt in ('-C', '--config'):
+				self.cfg.read(arg)
+
+		self.databases = []
+		self.brand = self.cfg.get('crow', 'brand')
+		self.debug = int(self.cfg.getboolean('crow', 'debug'))
+		self.detach = self.cfg.getboolean('crow', 'detach')
+		self.interval = None
+		self.logfile = None
+
+		for opt, arg in opts:
+			if opt in ('-D', '--debug'):
+				self.debug += 1
+			if opt in ('-d', '--database', '--databases', '--db'):
+				self.databases.append(arg)
+			if opt in ('--detach',):
+				self.detach = True
+			if opt in ('-b', '--brand'):
+				self.brand = arg
+			if opt in ('-i', '--interval'):
+				self.interval = int(arg)
+			if opt in ('-l', '--log'):
+				self.logfile = arg
+			if opt in ('-h', '--help'):
+				return []
+
+		if not self.databases:
+			self.databases = self.cfg.getlist('crow', 'db')
+		if not self.databases:
+			self.databases = ['default']
+		if self.databases == ['none']:
+			self.databases = []
+
+		return args
+
+	def queue(self, args, actions):
+		self.mode = 'queue'
+		if self.logfile is None:
+			self.logfile = self.cfg.get('crow', 'log') % self
+		logger = Logger.open(self.logfile)
+
+		interval = self.interval or self.cfg.getint('crow', 'queueinterval')
+		w = QueueWatcher(interval=interval, hooks=self.hooks)
+		for name in self.databases:
+			db = CrowDB.open(*self.dbdefs[name])
+			db.setlog(logger)
+			actions.append(DBUpdater(name, db))
+
+		w.watch(actions)
 		return 0
 
-	def history(args):
-		# Finally, after all filters, add db updaters to jobactions
-		for name, db in databases:
-			jobactions.append(DBUpdater(name, db, fromhistory=True))
+	def history(self, args, actions):
+		self.mode = 'history'
+		if self.logfile is None:
+			self.logfile = self.cfg.get('crow', 'log') % self
+		logger = Logger.open(self.logfile)
 
-		interval = _interval or cfg.getint('crow', 'historyinterval')
+		interval = self.interval or self.cfg.getint('crow', 'historyinterval')
 		if args:
 			for arg in args:
 				# Given args, do a one-time pass over each named file
-				w = HistoryWatcher(arg, interval=None, hooks=hooks)
-				w.watch(jobactions)
+				w = HistoryWatcher(arg, interval=None, hooks=self.hooks)
 		else:
-			file = cfg.get('condor', 'historyfile')
-			w = HistoryWatcher(file, interval=interval, hooks=hooks)
-			w.watch(jobactions)
+			file = self.cfg.get('condor', 'historyfile')
+			w = HistoryWatcher(file, interval=interval, hooks=self.hooks)
+
+		for name in self.databases:
+			db = CrowDB.open(*self.dbdefs[name])
+			db.setlog(logger)
+			actions.append(DBUpdater(name, db, fromhistory=True))
+
+		w.watch(actions)
 		return 0
 
-	if cmd == 'printconf':
-		cfg.write(sys.stdout)
-	elif cmd == 'queue':
-		queue(args)
-	elif cmd == 'history':
-		history(args)
-	elif cmd == 'all':
-		# this will be recommended, but not yet -
-		# we need better logging control first. Also better
-		# KeyboardInterrupt handling.
-		pid1 = os.fork()
-		if pid1 == 0:
-			return queue(args)
-		pid2 = os.fork()
-		if pid2 == 0:
-			return history(args)
-		if not detach:
-			os.waitpid(pid1)
-			os.waitpid(pid2)
-			return 0
-	else:
-		print >>sys.stderr, 'unknown command:', cmd
-		return usage()
-
 if __name__ == '__main__':
-	sys.exit(main(sys.argv[1:]))
+	sys.exit(main()(sys.argv[1:]))
