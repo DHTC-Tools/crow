@@ -30,8 +30,8 @@ historyinterval = 30
 queueinterval = 60
 detach = false
 db = default
-log = /var/log/crow_%(brand)s_%(mode)s.log
-pidfile = /var/run/crow_%(brand)s_%(mode)s.pid
+log = /var/log/crow-%(brand)s-%(mode)s.log
+pidfile = /var/run/crow-%(brand)s-%(mode)s.pid
 
 [db]
 default = mongodb://mongodbserver:27017, crow_%(brand)s
@@ -940,22 +940,23 @@ class main(object):
 			# KeyboardInterrupt handling.
 
 			self.pidfile = self.cfg.get('crow', 'pidfile') % self
+			title = getproctitle()
 
 			if self.detach:
 				pid0 = os.fork()
 				if pid0:
 					return 0
-			setproctitle(getproctitle() + ' [master]')
+			setproctitle(title + ' [master]')
 			self.mkpid()
 
 			pid1 = os.fork()
 			if pid1 == 0:
-				setproctitle(getproctitle() + ' [queue]')
+				setproctitle(title + ' [queue]')
 				return self.queue(args, jobactions)
 
 			pid2 = os.fork()
 			if pid2 == 0:
-				setproctitle(getproctitle() + ' [history]')
+				setproctitle(title + ' [history]')
 				return self.history(args, jobactions)
 
 			try:
