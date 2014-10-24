@@ -11,10 +11,11 @@ BuildArch: noarch
 Requires: pymongo condor
 %if 0%{?rhel} > 5
 Requires: python-pymongo condor
+Suggests: py-setproctitle
 %endif
 
 %description
-Crow is a monitoring toolkit for HTCondor
+Crow is a monitoring toolkit for HTCondor.
 
 %prep
 %setup -q -n %{name}
@@ -35,8 +36,7 @@ cp -p bin/qcrow %{buildroot}%{_bindir}
 cp -p README.md LICENSE %{buildroot}%{_defaultdocdir}/%{name}-%{version}
 cp -p etc/sysconfig %{buildroot}%{_sysconfdir}/sysconfig/crow
 cp -p etc/crow.ini %{buildroot}%{_sysconfdir}/crow.ini
-cp -p etc/initcrow %{buildroot}%{_sysconfdir}/init.d/crow
-cp -p etc/init-mw %{buildroot}%{_sysconfdir}/init.d/crow-mw
+cp -p etc/init.d/* %{buildroot}%{_sysconfdir}/init.d/
 cp -pr server html %{buildroot}/var/lib/crow
 
 %clean
@@ -51,12 +51,11 @@ rm -rf %{buildroot}
 %{_defaultdocdir}/%{name}-%{version}/LICENSE
 %config %{_sysconfdir}/sysconfig/crow
 %config %{_sysconfdir}/crow.ini
-%{_sysconfdir}/init.d/crow
+%{_sysconfdir}/init.d/crow-collector
+%{_sysconfdir}/init.d/crow-server
 /var/lib/crow/html/
 /var/lib/crow/server/
 
 
 
 %changelog
-* Tue Sep 09 2014 Lincoln Bryant <lincolnb@hep.uchicago.edu>
-- Really weird first build
