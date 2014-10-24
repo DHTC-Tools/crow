@@ -18,6 +18,7 @@ import socket
 import string
 import time
 import ConfigParser
+import json
 
 import pymongo
 import cherrypy
@@ -92,12 +93,16 @@ class frob(dict):
 
 
 class crowhandler(object):
+	cacheignores = []
+
 	def __init__(self, app):
 		self.app = app
 		_ = hashlib.md5()
 		_.update(str(time.time()) + str(id(self)))
 		self.instance = _.hexdigest()[:8]
 		self.req = 0
+		self.dbserver, _ = self.app.config.getlist('db', 'default')
+		self.client = pymongo.MongoClient(self.dbserver)
 
 	@cherrypy.tools.accept(media='application/json')
 	@cherrypy.tools.json_out()
@@ -113,14 +118,43 @@ class crowhandler(object):
 
 
 	def getDB(self, pool):
-		dbserver, _ = self.app.config.getlist('db', 'default')
-		client = pymongo.MongoClient(dbserver)
-		if hasattr(mongoclient, pool):
-			db = getattr(self.app.mongoclient, pool)
-			if hasattr(db, 'jobs'):
-				return db.jobs
+		if not pool.startswith('crow_'):
+			pool = 'crow_' + pool
+		if hasattr(self.client, pool):
+			return getattr(self.client, pool)
 		return None
 
+	def querykey(self, query):
+		md5 = hashlib.md5()
+		md5.update(self.__class__.__name__)	# method/path, e.g. "starts"
+		for key in sorted(query.keys()):
+			if key in self.cacheignores:
+				continue
+			md5.update(key)
+			md5.update(str(query[key]))
+		return md5.hexdigest()[:8]
+
+	def cached(self, db, query):
+		qkey = self.querykey(query)
+		r = db.cache.find_one({'_id': qkey})
+		if r is None:
+			return None
+		if r['expires'] < time.time():
+			# expired
+			return None
+		return r['data']
+
+	def cache(self, db, query, data, lifetime=15*60):
+		qkey = self.querykey(query)
+		r = db.cache.find_one({'_id': qkey})
+		if r:
+			db.cache.update({'_id': qkey},
+			                {'expires': time.time() + lifetime,
+			                 'data': data})
+		else:
+			db.cache.insert({'_id': qkey,
+			                 'expires': time.time() + lifetime,
+			                 'data': data})
 
 	def mongofilter(self, f, expr):
 		if ',' in expr:
@@ -155,6 +189,7 @@ class crowhandler(object):
 		select = self._and(
 			self._or(
 				{'latest.CompletionDate': {'$exists': False}}, # select jobs that have not CompletionDate
+				{'latest.CompletionDate': 0}, # select jobs that have not CompletionDate
 				{'latest.CompletionDate': {'$gt': startTime}}, # and the ones that finished after startTime
 			),
 			*andFilters
@@ -183,6 +218,71 @@ class crowhandler(object):
 		return ct, startTime, interval
 
 
+class current(crowhandler):
+	exposed = True
+
+	# passing in log is janky, but without a proper handler/request model
+	# in cherrypy it's all we have for now.
+
+	# n.b. width doesn't affect queried data, so ignore that in /current queries
+	cacheignores = ['width']
+
+	def post(self, log):
+		params = self.readparams({
+			'pool': 'default',
+			'project': 'all',
+			'user': 'all',
+			'task': 'all',
+			'groupby': 'ProjectName',
+		})
+
+		db = self.getDB(params.pool)
+
+		t = timer().start()
+		rows = db.jobs.find(
+			self._and(
+				{'latest.QDate': {'$gt': time.time() - (86400 * 14)}},
+				{'latest.JobStatus': {'$in': [0, 1, 2, 5, 7]}},
+			),
+			{
+				'latest.QDate': 1,
+				'latest.JobStatus': 1,
+				'latest.ProjectName': 1,
+				'latest.JobStartDate': 1,
+				'latest.CompletionDate': 1,
+				'latest.User': 1,
+				'latest.ClusterId': 1,
+				'latest.Owner': 1,
+			})
+		log('t(mongodb) = %.5fs' % t.check())
+
+		count = 0
+		for r in rows:
+			count += 1
+		log('%d matching jobs' % count)
+
+		result = {
+			'plot': [
+				{
+					'name': 'member1',
+					'data': [
+						[time1, data1],
+						[time2, data2],
+					]
+				},
+				{
+					'name': 'member2',
+					'data': [
+						[time1, data1],
+						[time2, data2],
+					]
+				},
+			]
+		}
+
+		return result
+
+
 class starts(crowhandler):
 	exposed = True
 
@@ -196,7 +296,12 @@ class starts(crowhandler):
 	# JobFinishedHookDone = 1410041471
 	# LastJobLeaseRenewal = 1410041471
 
+	# n.b. width doesn't affect queried data, so ignore that in /starts queries
+	cacheignores = ['width']
+
 	def post(self, log):
+		#log('initial postdata: %s' % cherrypy.request.json)
+
 		params = self.readparams({
 			'pool': 'default',
 			'project': 'all',
@@ -224,11 +329,21 @@ class starts(crowhandler):
 			params.bins += 1
 			startTime -= (startTime % 3600)
 
+		# cache check
+		t = timer().start()
+		data = self.cached(db, params)
+		if data:
+			r = json.loads(data)
+			log('t(cache check +) = %.5fs' % t.check())
+			return r
+		else:
+			log('t(cache check -) = %.5fs' % t.check())
+
 		# need to tune the db selection based on $rel
 		select = self.standardfilter(params, startTime, interval)
 
 		t = timer().start()
-		rows = db.find(
+		rows = db.jobs.find(
 			select,
 			{
 				'latest.QDate': 1,
@@ -241,6 +356,7 @@ class starts(crowhandler):
 				'latest.Owner': 1,
 			})
 		log('t(mongodb) = %.5fs' % t.check())
+		log('selector found %d jobs' % rows.count())
 
 		result = {}
 		result['plot'] = []
@@ -280,10 +396,13 @@ class starts(crowhandler):
 		log('t(distinct) %.5fs' % t.check())
 
 		t = timer().start()
+		keyprop = rel[params.rel][1]
 		for r in rows:
 			group = r['latest'][params.groupby]
-			totals[group] += 1
-			stime = r['latest'][rel[params.rel][1]]
+			if keyprop in r['latest']:
+				stime = r['latest'][keyprop]
+			else:
+				stime = ct+1
 			if 'CompletionDate' in r['latest']:
 				etime = r['latest']['CompletionDate']
 			else:
@@ -293,14 +412,20 @@ class starts(crowhandler):
 				first = 0
 			if last > params.bins:
 				last = params.bins
-			for b in range(first, last):
+			#if first > last:
+			#	print 'anomalous', r['_id']
+			for b in range(first, last+1):
 				pData[group][b][1] += 1
+				totals[group] += 1
 		log('t(binning) = %.5fs' % t.check())
 
-		# not sure why yet but some of these groups come up with zero counts
+		# not sure why yet but some of these groups come up with zero counts.
+		# (this happens when the select finds jobs that binning excludes.)
 		for group in list(pData.keys()):
-			total = sum([pData[group][x][1] for x in range(len(pData[group]))])
-			if total == 0:
+			#total = sum([pData[group][x][1] for x in range(len(pData[group]))])
+			#if total == 0:
+			#	del pData[group]
+			if totals[group] == 0:
 				del pData[group]
 
 		for p in series:
@@ -310,6 +435,9 @@ class starts(crowhandler):
 				ser['data'] = pData[p]
 				result['plot'].append(ser)
 
+		t = timer().start()
+		self.cache(db, params, json.dumps(result))
+		log('t(cache) = %.5fs' % t.check())
 		return result
 
 
@@ -332,7 +460,7 @@ class distincts(crowhandler):
 		ret['Tasks'] = []
 		ret['ProjectNames'] = []
 		startTime = int(time.time())-int(interval)
-		rows = db.find({'latest.CompletionDate': {'$gt': startTime}},{'latest.ProjectName': 1,'latest.User': 1,'latest.ClusterId': 1,'latest.Owner': 1})
+		rows = db.jobs.find({'latest.CompletionDate': {'$gt': startTime}},{'latest.ProjectName': 1,'latest.User': 1,'latest.ClusterId': 1,'latest.Owner': 1})
 		ret['ProjectNames'] = rows.distinct('latest.ProjectName')
 		ret['Tasks'] = rows.distinct('latest.ClusterId')
 		ret['Users'] = rows.distinct('latest.User')
@@ -351,6 +479,7 @@ class crowmw(object):
 		self.config = config
 		self.distincts = distincts(self)
 		self.starts = starts(self)
+		self.current = current(self)
 
 
 if __name__ == '__main__':	  

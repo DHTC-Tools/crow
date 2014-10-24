@@ -46,7 +46,7 @@ function load() {
 		running: 'Jobs Running',
 		started: 'Jobs Started',
 		finished: 'Jobs Completed',
-		queued: 'Jobs Enqueued',
+		submitted: 'Jobs Submitted',
 	}
 
 	var options = {
@@ -67,7 +67,7 @@ function load() {
 				}
 			},
 			title: { text: '' },
-			xAxis: { type: 'datetime', tickWidth: 0, gridLineWidth: 1, /* title: { text: 'Date' } */ },
+			xAxis: { type: 'datetime', tickWidth: 0, gridLineWidth: 1, title: { text: 'Date/Time' } },
 			yAxis: { title: { text: yLabels[params.rel] } },
 			legend: { align: 'left', verticalAlign: 'top', y: 10, floating: true, borderWidth: 0 },
 			//exporting: {	   buttons: { contextButton: {	text: 'Export' } }, sourceHeight:1050, sourceWidth: 1485	},
@@ -83,7 +83,7 @@ function load() {
 		$('#flying img').attr('src', 'standing.png').addClass('failed');
 		$('#moon').css('background-color', '#c00');
 		$('span.status').html('has failed. probably.');
-	}, 45000);
+	}, 60000);
 
 	// why? $.ajaxSetup({async: false});
 	$.ajax({
@@ -118,26 +118,32 @@ function load() {
 	});
 }
 
-$(document).ready(function() {
-	$('#crowgraph').hide();
+$(document).ready(function () {
+	// delay the crow animation by 2s in case response is quick
+	setTimeout(function () {
+		//$('#crowgraph').hide();
+		$('#flying').show();
 
-	// get title elements
-	var name = $('.name');
-	var status = $('span.status');
+		// get title elements
+		var name = $('.name');
+		var status = $('span.status');
 
-	// get ratio of name's width to font size
-	name.css('font-size', '200%');
-	var r = name.width() / 200.0;
+		// get ratio of name's width to font size
+		name.css('font-size', '200%');
+		var r = name.width() / 200.0;
 
-	// compute ratio of status's width to that ratio
-	var sz = status.width() / r;
-	// and set the f-s to that value
-	name.css('font-size', '' + sz + '%');
+		// compute ratio of status's width to that ratio
+		var sz = status.width() / r;
+		// and set the f-s to that value
+		name.css('font-size', '' + sz + '%');
 
-	// do it again for fine adjustments
-	var r = name.width() / sz;
-	var sz = status.width() / r;
-	name.css('font-size', '' + sz + '%');
+		// do it again for fine adjustments
+		var r = name.width() / sz;
+		var sz = status.width() / r;
+		name.css('font-size', '' + sz + '%');
 
+	}, 2000);
+
+	$('#flying').hide();
 	load();
 });
