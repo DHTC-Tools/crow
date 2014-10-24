@@ -66,4 +66,4 @@ rm -rf %{buildroot}
 
 # insanity
 %changelog
-%(git log --date=raw --no-merges --format="* %%cd %%an <%%ae>%%%%- %%s%%%%" package/crow.spec| tr %% '\012' | awk '/^*/ {"date -d@"$2" '"'+%%a %%b %%d %%Y'"'" | getline d; $2 = d; $3 = "";} {print;}')
+%(git log --date=raw --no-merges --format="* %%cd %%an <%%ae>%%%%- %%s%%%%" | tr %% '\012' | awk '/^*/ {"date -d@"$2" '"'+%%a %%b %%d %%Y'"'" | getline d; $2 = d; $3 = "";} {print;}')
