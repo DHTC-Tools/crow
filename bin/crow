@@ -5,10 +5,16 @@ import sys
 import time
 import getopt
 import ConfigParser
+import signal
 
 import pymongo
 import htcondor
 import classad
+
+try:
+	from setproctitle import setproctitle, getproctitle
+except ImportError:
+	setproctitle = getproctitle = lambda t: True
 
 try:
 	from hashlib import md5
@@ -22,9 +28,10 @@ debug = false
 brand = generic
 historyinterval = 30
 queueinterval = 60
-detach = true
+detach = false
 db = default
 log = /var/log/crow_%(brand)s_%(mode)s.log
+pidfile = /var/run/crow_%(brand)s_%(mode)s.pid
 
 [db]
 default = mongodb://mongodbserver:27017, crow_%(brand)s
@@ -143,6 +150,7 @@ class FileLogger(Logger):
 			print >>self.fp, fmt % args
 		else:
 			print >>self.fp, fmt
+		self.fp.flush()
 
 	def __del__(self):
 		self.close()
@@ -879,13 +887,13 @@ class main(object):
 
 		def begin(w, jobs):
 			w.hookctx.count = 0
+			w.hookctx.start = time.time()
 			w.log('** starting scan (%s)', tfmt(time.time()))
-			sys.stdout.flush()
 		def cycle(w, jobs):
 			w.log('** cycled (%s)', tfmt(time.time()))
 		def end(w, jobs):
-			w.log('-- %d jobs processed (%s)', w.hookctx.count, tfmt(time.time()))
-			sys.stdout.flush()
+			dt = time.time() - w.hookctx.start
+			w.log('-- %d jobs processed in %.2fs (%s)', w.hookctx.count, dt, tfmt(time.time()))
 
 		self.hooks = {
 			'begin': begin,
@@ -915,6 +923,8 @@ class main(object):
 		if self.cfg.has_option('condor', 'adfilter'):
 			jobactions.append(AdFilter(self.cfg.get('condor', 'adfilter') + ' GlobalJobId or'))
 
+		self.mode = cmd
+
 		if cmd == 'printconf':
 			self.cfg.write(sys.stdout)
 
@@ -924,21 +934,38 @@ class main(object):
 		elif cmd == 'history':
 			self.history(args, jobactions)
 
-		elif cmd == 'all':
+		elif cmd == 'master':
 			# this will be recommended, but not yet -
 			# we need better logging control first. Also better
 			# KeyboardInterrupt handling.
 
+			self.pidfile = self.cfg.get('crow', 'pidfile') % self
+
+			if self.detach:
+				pid0 = os.fork()
+				if pid0:
+					return 0
+			setproctitle(getproctitle() + ' [master]')
+			self.mkpid()
+
 			pid1 = os.fork()
 			if pid1 == 0:
+				setproctitle(getproctitle() + ' [queue]')
 				return self.queue(args, jobactions)
+
 			pid2 = os.fork()
 			if pid2 == 0:
+				setproctitle(getproctitle() + ' [history]')
 				return self.history(args, jobactions)
-			if not detach:
-				os.waitpid(pid1)
-				os.waitpid(pid2)
-				return 0
+
+			try:
+				os.waitpid(pid1, 0)
+				os.waitpid(pid2, 0)
+			except KeyboardInterrupt:
+				os.kill(pid1, signal.SIGINT)
+				os.kill(pid2, signal.SIGINT)
+			self.rmpid()
+			return 0
 
 		else:
 			print >>sys.stderr, 'unknown command:', cmd
@@ -985,44 +1012,72 @@ class main(object):
 
 		return args
 
+	def mkpid(self):
+		self.pidfile = self.cfg.get('crow', 'pidfile') % self
+		self.rmpid()
+		os.symlink(str(os.getpid()), self.pidfile)
+
+	def rmpid(self):
+		try:
+			os.unlink(self.pidfile)
+		except:
+			pass
+
 	def queue(self, args, actions):
-		self.mode = 'queue'
-		if self.logfile is None:
-			self.logfile = self.cfg.get('crow', 'log') % self
-		logger = Logger.open(self.logfile)
+		try:
+			self.mode = 'queue'
+			self.mkpid()
+			if self.logfile is None:
+				self.logfile = self.cfg.get('crow', 'log') % self
+			logger = Logger.open(self.logfile)
 
-		interval = self.interval or self.cfg.getint('crow', 'queueinterval')
-		w = QueueWatcher(interval=interval, hooks=self.hooks)
-		for name in self.databases:
-			db = CrowDB.open(*self.dbdefs[name])
-			db.setlog(logger)
-			actions.append(DBUpdater(name, db))
+			interval = self.interval or self.cfg.getint('crow', 'queueinterval')
+			w = QueueWatcher(interval=interval, hooks=self.hooks)
+			w.setlog(logger)
+			for name in self.databases:
+				db = CrowDB.open(*self.dbdefs[name])
+				db.setlog(logger)
+				actions.append(DBUpdater(name, db))
 
-		w.watch(actions)
-		return 0
+			w.watch(actions)
+			return 0
+		except KeyboardInterrupt:
+			self.rmpid()
+			return 255
 
 	def history(self, args, actions):
-		self.mode = 'history'
-		if self.logfile is None:
-			self.logfile = self.cfg.get('crow', 'log') % self
-		logger = Logger.open(self.logfile)
+		try:
+			self.mode = 'history'
+			self.mkpid()
+			if self.logfile is None:
+				self.logfile = self.cfg.get('crow', 'log') % self
+			logger = Logger.open(self.logfile)
 
-		interval = self.interval or self.cfg.getint('crow', 'historyinterval')
-		if args:
-			for arg in args:
-				# Given args, do a one-time pass over each named file
-				w = HistoryWatcher(arg, interval=None, hooks=self.hooks)
-		else:
-			file = self.cfg.get('condor', 'historyfile')
-			w = HistoryWatcher(file, interval=interval, hooks=self.hooks)
+			for name in self.databases:
+				db = CrowDB.open(*self.dbdefs[name])
+				db.setlog(logger)
+				actions.append(DBUpdater(name, db, fromhistory=True))
 
-		for name in self.databases:
-			db = CrowDB.open(*self.dbdefs[name])
-			db.setlog(logger)
-			actions.append(DBUpdater(name, db, fromhistory=True))
+			interval = self.interval or self.cfg.getint('crow', 'historyinterval')
 
-		w.watch(actions)
-		return 0
+			if args:
+				# XXX This could be cleaned up - we only need one watcher, and
+				# should tell it to "watch" successive files.
+				for arg in args:
+					# Given args, do a one-time pass over each named file
+					w = HistoryWatcher(arg, interval=None, hooks=self.hooks)
+					w.setlog(logger)
+					w.watch(actions)
+			else:
+				file = self.cfg.get('condor', 'historyfile')
+				w = HistoryWatcher(file, interval=interval, hooks=self.hooks)
+				w.setlog(logger)
+				w.watch(actions)
+
+			return 0
+		except KeyboardInterrupt:
+			self.rmpid()
+			return 255
 
 if __name__ == '__main__':
 	sys.exit(main()(sys.argv[1:]))
