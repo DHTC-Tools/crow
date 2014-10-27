@@ -1,3 +1,9 @@
+#
+# This spec file is now all you need.
+#   $ rpmbuild -ba package/crow.spec
+# The current checked-out revision will be built.
+#
+
 %global headrev %(git rev-parse HEAD)
 %global short %(c=%{headrev}; echo ${c:0:6})
 %global date %(date +%Y%m%d)

@@ -1,4 +1,7 @@
 #!/bin/sh
+#
+# No longer used.
+#
 
 date=$(date +%Y%m%d)
 set -x
