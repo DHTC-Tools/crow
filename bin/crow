@@ -583,11 +583,11 @@ class CrowMongo(CrowDB):
 		})
 		if jobent is None:
 			return False
-		if 'lifecycle' in jobent and jobent['lifecycle']['unobserved']:
+		if 'lifecycle' in jobent and 'unobserved' in jobent['lifecycle'] and jobent['lifecycle']['unobserved']:
 			return False
-		if 'lifecycle' in jobent:
+		try:
 			updatewith = jobent['lifecycle']['dequeued'] or jobent['lifecycle']['completed'] or int(time.time())
-		else:
+		except KeyError:
 			updatewith = int(time.time())
 		self.db.jobs.update({'_id': jobid}, {'$set': {'lifecycle.unobserved': updatewith}})
 		return True
