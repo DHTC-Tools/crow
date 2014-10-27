@@ -19,7 +19,7 @@ pidfile="/var/run/crow-${BRAND}-master.pid"
 start () {
 	[ -x $exec ] || exit 5
 	[ -f $config ] || exit 6 
-	[ -e $pidfile ] && { echo >&2 "pidfile $pidfile exists - not starting; exit 7; }
+	[ -e $pidfile ] && { echo >&2 "pidfile $pidfile exists - not starting"; exit 7; }
 
 	daemon $prog -b ${BRAND}
 }
