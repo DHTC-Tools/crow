@@ -1,3 +1,1 @@
-LOG_history=/var/log/crow-history.log
-LOG_queue=/var/log/crow-queue.log
 BRAND=generic
