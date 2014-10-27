@@ -1,4 +1,7 @@
 #!/bin/sh
+#
+# No longer used.
+#
 
 version=${1-HEAD}
 tarball=crow.$(date +%Y%m%d)git${version}.tar.gz

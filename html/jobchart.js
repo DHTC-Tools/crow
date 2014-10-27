@@ -67,7 +67,7 @@ function load() {
 				}
 			},
 			title: { text: '' },
-			xAxis: { type: 'datetime', tickWidth: 0, gridLineWidth: 1, title: { text: 'Date/Time' } },
+			xAxis: { type: 'datetime', tickWidth: 0, gridLineWidth: 1, title: { text: 'Date/Time (all times UTC)' } },
 			yAxis: { title: { text: yLabels[params.rel] } },
 			legend: { align: 'left', verticalAlign: 'top', y: 10, floating: true, borderWidth: 0 },
 			//exporting: {	   buttons: { contextButton: {	text: 'Export' } }, sourceHeight:1050, sourceWidth: 1485	},
