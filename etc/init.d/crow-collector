@@ -19,17 +19,17 @@ pidfile="/var/run/crow-${BRAND}-master.pid"
 start () {
 	[ -x $exec ] || exit 5
 	[ -f $config ] || exit 6 
-	[ -e $pidfile ] && { echo >&2 "pidfile $pidfile exists - not starting"; exit 7; }
+	[ -h $pidfile ] && { echo >&2 "pidfile $pidfile exists - not starting"; exit 7; }
 
 	daemon $prog -b ${BRAND} master
 }
 
 stop () {
-	if [ -e $pidfile ]; then
+	if [ -h $pidfile ]; then
 		echo -n $"Stopping $prog: "
-		kill -INT $(cat $pidfile) && echo ok
+		kill -INT $(readlink $pidfile) && echo ok
 	else
-		echo >&2 "lockfile does not exist: $lockfile"
+		echo >&2 "lockfile does not exist: $pidfile"
 	fi
 }
 
