@@ -8,48 +8,29 @@
 
 exec="/usr/bin/crow"
 prog="crow"
-
 lockdir=/var/lock/subsys
 
-LOG_history=/var/log/crow-history.log
-LOG_queue=/var/log/crow-queue.log
 BRAND=generic
 
 [ -e /etc/sysconfig/$prog ] && . /etc/sysconfig/$prog
 
+pidfile="/var/run/crow-${BRAND}-master.pid"
+
 start () {
 	[ -x $exec ] || exit 5
 	[ -f $config ] || exit 6 
+	[ -e $pidfile ] && { echo >&2 "pidfile $pidfile exists - not starting; exit 7; }
 
-	for mode in history queue; do
-		what="$prog $mode"
-		lockfile=$lockdir/$(echo "$what" | tr ' ' _)
-		if [ -f $lockfile ]; then
-			echo >&2 "lockfile exists: $lockfile"
-		else
-			log=$(eval echo '$LOG_'$mode)
-			cmd="$exec -b $BRAND $mode"
-			echo -n $"Starting $what: "
-			$cmd > $log &
-			pid=$!
-			retval=$?
-			echo
-			[ $retval -eq 0 ] && echo $pid > $lockfile
-		fi
-	done
+	daemon $prog -b ${BRAND}
 }
 
 stop () {
-	for mode in history queue; do
-		what="$prog $mode"
-		lockfile=$lockdir/$(echo "$what" | tr ' ' _)
-		if [ -f $lockfile ]; then
-			echo -n $"Stopping $what: "
-			kill $(cat $lockfile) && echo ok && rm -f $lockfile
-		else
-			echo >&2 "lockfile does not exist: $lockfile"
-		fi
-	done
+	if [ -e $pidfile ]; then
+		echo -n $"Stopping $prog: "
+		kill -INT $(cat $pidfile) && echo ok
+	else
+		echo >&2 "lockfile does not exist: $lockfile"
+	fi
 }
 
 restart () {
