@@ -21,7 +21,7 @@ start () {
 	[ -f $config ] || exit 6 
 	[ -e $pidfile ] && { echo >&2 "pidfile $pidfile exists - not starting"; exit 7; }
 
-	daemon $prog -b ${BRAND}
+	daemon $prog -b ${BRAND} master
 }
 
 stop () {
