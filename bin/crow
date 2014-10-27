@@ -110,7 +110,7 @@ class DriverStack(object):
 				continue
 			try:
 				return value._try(*args)
-			except Exception, e:
+			except cls.InappropriateDriverError, e:
 				pass
 		raise cls.InappropriateDriverError, 'no suitable drivers for "%s"' % args[0]
 
@@ -406,6 +406,8 @@ class CrowDB(DriverStack):
 	information, abstracted over get/set methods that are implemented
 	by a subclass.  See CrowMongo below for example.'''
 
+	class DriverFailed(CrowError): pass
+
 	def __init__(self, *args, **kwargs):
 		if 'logger' in kwargs:
 			self.log = kwargs['logger']
@@ -540,6 +542,8 @@ class CrowMongo(CrowDB):
 			conn = pymongo.MongoClient(addr)
 		except AttributeError:
 			conn = pymongo.Connection(addr)
+		except pymongo.errors.ConnectionFailure, e:
+			raise self.DriverFailed, str(e)
 		self.db = conn[dbname]
 
 	# A jobent record has three keys:
