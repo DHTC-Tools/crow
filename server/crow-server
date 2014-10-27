@@ -138,11 +138,11 @@ class crowhandler(object):
 		qkey = self.querykey(query)
 		r = db.cache.find_one({'_id': qkey})
 		if r is None:
-			return None
+			return qkey, None
 		if r['expires'] < time.time():
 			# expired
-			return None
-		return r['data']
+			return qkey, None
+		return qkey, r['data']
 
 	def cache(self, db, query, data, lifetime=15*60):
 		qkey = self.querykey(query)
@@ -155,6 +155,7 @@ class crowhandler(object):
 			db.cache.insert({'_id': qkey,
 			                 'expires': time.time() + lifetime,
 			                 'data': data})
+		return qkey
 
 	def mongofilter(self, f, expr):
 		if ',' in expr:
@@ -300,7 +301,7 @@ class starts(crowhandler):
 	cacheignores = ['width']
 
 	def post(self, log):
-		#log('initial postdata: %s' % cherrypy.request.json)
+		log('initial postdata: %s' % cherrypy.request.json)
 
 		params = self.readparams({
 			'pool': 'default',
@@ -331,13 +332,13 @@ class starts(crowhandler):
 
 		# cache check
 		t = timer().start()
-		data = self.cached(db, params)
+		qkey, data = self.cached(db, params)
 		if data:
 			r = json.loads(data)
-			log('t(cache check +) = %.5fs' % t.check())
+			log('t(cache check %s +) = %.5fs' % (qkey, t.check()))
 			return r
 		else:
-			log('t(cache check -) = %.5fs' % t.check())
+			log('t(cache check %s -) = %.5fs' % (qkey, t.check()))
 
 		# need to tune the db selection based on $rel
 		select = self.standardfilter(params, startTime, interval)
@@ -436,8 +437,8 @@ class starts(crowhandler):
 				result['plot'].append(ser)
 
 		t = timer().start()
-		self.cache(db, params, json.dumps(result))
-		log('t(cache) = %.5fs' % t.check())
+		qkey = self.cache(db, params, json.dumps(result))
+		log('t(cache %s) = %.5fs' % (qkey, t.check()))
 		return result
 
 
