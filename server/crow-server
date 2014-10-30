@@ -134,15 +134,17 @@ class crowhandler(object):
 			md5.update(str(query[key]))
 		return md5.hexdigest()[:8]
 
-	def cached(self, db, query):
+	def cached(self, req, db, query):
 		qkey = self.querykey(query)
+		if 'X-Crow-RCache' in req.headers and req.headers['X-Crow-RCache'] == 'no':
+			return qkey, None, 'nocache'
 		r = db.cache.find_one({'_id': qkey})
 		if r is None:
-			return qkey, None
+			return qkey, None, 'uncached'
 		if r['expires'] < time.time():
 			# expired
-			return qkey, None
-		return qkey, r['data']
+			return qkey, None, 'expired'
+		return qkey, r['data'], 'ok'
 
 	def cache(self, db, query, data, lifetime=15*60):
 		qkey = self.querykey(query)
@@ -225,8 +227,12 @@ class current(crowhandler):
 	# passing in log is janky, but without a proper handler/request model
 	# in cherrypy it's all we have for now.
 
-	# n.b. width doesn't affect queried data, so ignore that in /current queries
-	cacheignores = ['width']
+	cacheignores = [
+		# n.b. width doesn't affect queried data, so ignore that in /current queries
+		'width',
+		# current doesn't either - it only changes whether we check for cached data
+		'current',
+	]
 
 	def post(self, log):
 		params = self.readparams({
@@ -235,6 +241,7 @@ class current(crowhandler):
 			'user': 'all',
 			'task': 'all',
 			'groupby': 'ProjectName',
+			'current': False,		# euphemism: current == True -> no caching please
 		})
 
 		db = self.getDB(params.pool)
@@ -297,8 +304,12 @@ class starts(crowhandler):
 	# JobFinishedHookDone = 1410041471
 	# LastJobLeaseRenewal = 1410041471
 
-	# n.b. width doesn't affect queried data, so ignore that in /starts queries
-	cacheignores = ['width']
+	cacheignores = [
+		# n.b. width doesn't affect queried data, so ignore that in /current queries
+		'width',
+		# current doesn't either - it only changes whether we check for cached data
+		'current',
+	]
 
 	def post(self, log):
 		log('initial postdata: %s' % cherrypy.request.json)
@@ -314,6 +325,7 @@ class starts(crowhandler):
 			'end': 'default',
 			'hours': 0,
 			'bins': 0,
+			'current': False,		# euphemism: current == True -> no caching please
 		})
 
 		db = self.getDB(params.pool)
@@ -331,14 +343,15 @@ class starts(crowhandler):
 			startTime -= (startTime % 3600)
 
 		# cache check
-		t = timer().start()
-		qkey, data = self.cached(db, params)
-		if data:
-			r = json.loads(data)
-			log('t(cache check %s +) = %.5fs' % (qkey, t.check()))
-			return r
-		else:
-			log('t(cache check %s -) = %.5fs' % (qkey, t.check()))
+		if not params.current:
+			t = timer().start()
+			qkey, data, reason = self.cached(cherrypy.request, db, params)
+			if data:
+				r = json.loads(data)
+				log('t(cache check %s %s) = %.5fs' % (qkey, reason, t.check()))
+				return r
+			else:
+				log('t(cache check %s %s) = %.5fs' % (qkey, reason, t.check()))
 
 		# need to tune the db selection based on $rel
 		select = self.standardfilter(params, startTime, interval)
@@ -437,6 +450,7 @@ class starts(crowhandler):
 				result['plot'].append(ser)
 
 		t = timer().start()
+		# even if we asked for no caches, we will take advantage and cache this result
 		qkey = self.cache(db, params, json.dumps(result))
 		log('t(cache %s) = %.5fs' % (qkey, t.check()))
 		return result
