@@ -6,6 +6,7 @@ var params = {
 	height: [$(window).height() - 50, parseInt], //600,
 	hours: [48, parseInt],
 	minbin: [10, parseInt],
+	maxbin: [40, parseInt],
 	pool: ['osg', String],
 	project: ['all', String],
 	user: ['all', String],
@@ -40,6 +41,12 @@ function load() {
 	while (params.width / bins < params.minbin) {
 		bins /= 2;
 		millis *= 2;
+	}
+
+	/* Similarly, if binwidth is too small, then make more */
+	while (params.width / bins > params.maxbin) {
+		bins *= 2;
+		millis /= 2;
 	}
 
 	yLabels = {
