@@ -457,6 +457,7 @@ class starts(crowhandler):
 
 
 class distincts(crowhandler):
+	'''not used'''
 	exposed = True
 	@cherrypy.tools.accept(media='application/json')
 	@cherrypy.tools.json_out()
@@ -492,7 +493,6 @@ class crowmw(object):
 
 	def __init__(self, config):
 		self.config = config
-		self.distincts = distincts(self)
 		self.starts = starts(self)
 		self.current = current(self)
 
