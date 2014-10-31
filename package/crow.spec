@@ -20,7 +20,7 @@ BuildRoot:	%(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 BuildArch: noarch
 Requires: pymongo condor
 %if 0%{?rhel} > 5
-Requires: python-pymongo condor
+Requires: python-pymongo condor python-setproctitle
 #Suggests: py-setproctitle
 %endif
 
