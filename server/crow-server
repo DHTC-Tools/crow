@@ -27,42 +27,6 @@ import cherrypy
 os.environ['TZ'] = 'UTC'
 time.tzset()
 
-try:
-	import parsedatetime
-	pdt = parsedatetime.Calendar()
-except ImportError:
-	pdt = None
-
-def tconv(s):
-	'''Converts time string to Epoch seconds (int).
-	If parsedatetime available, we can convert various English
-	expressions of time.  If not, we can only convert Epoch
-	seconds as a string to Epoch seconds as int.
-	'''
-
-	try:
-		return int(s)
-	except ValueError:
-		tm, mode = pdt.parse(s)
-		ptm = list(tm)
-		tmnow = list(time.gmtime())
-
-		def _(tm):
-			if mode == 1:
-				tm = tm[:3] + [0, 0, 0] + tm[6:]
-				# if future, subtract a year
-				if time.mktime(tm) > time.mktime(tmnow):
-					tm[0] -= 1
-					return _(tm)
-			if mode == 2:
-				tm = tmnow[:3] + tm[3:]
-				# if future, subtract a day
-				if time.mktime(tm) > time.mktime(tmnow):
-					return time.mktime(tm) - 86400
-			return time.mktime(tm)
-
-		return _(ptm)
-
 
 class Config(ConfigParser.RawConfigParser):
 	def getlist(self, section, option):
@@ -124,6 +88,12 @@ class crowapp(object):
 class crowhandler(object):
 	cacheignores = []
 
+	try:
+		import parsedatetime
+		pdt = parsedatetime.Calendar()
+	except ImportError:
+		pdt = None
+
 	def __init__(self, app, req, reqno):
 		self.app = app
 		self.request = req
@@ -133,6 +103,37 @@ class crowhandler(object):
 	def log(self, msg):
 		print '[%s %.3f] %s' % (self.reqid, time.time(), msg)
 		sys.stdout.flush()
+
+	@staticmethod
+	def tconv(s):
+		'''Converts time string to Epoch seconds (int).
+		If parsedatetime available, we can convert various English
+		expressions of time.  If not, we can only convert Epoch
+		seconds as a string to Epoch seconds as int.
+		'''
+
+		try:
+			return int(s)
+		except ValueError:
+			tm, mode = pdt.parse(s)
+			ptm = list(tm)
+			tmnow = list(time.gmtime())
+
+			def _(tm):
+				if mode == 1:
+					tm = tm[:3] + [0, 0, 0] + tm[6:]
+					# if future, subtract a year
+					if time.mktime(tm) > time.mktime(tmnow):
+						tm[0] -= 1
+						return _(tm)
+				if mode == 2:
+					tm = tmnow[:3] + tm[3:]
+					# if future, subtract a day
+					if time.mktime(tm) > time.mktime(tmnow):
+						return time.mktime(tm) - 86400
+				return time.mktime(tm)
+
+			return _(ptm)
 
 	def querykey(self, query):
 		md5 = hashlib.md5()
@@ -224,10 +225,10 @@ class crowhandler(object):
 			startTime = ct - interval
 		elif params.start == 'default':
 			interval = params.hours * 3600
-			startTime = tconv(params.end) - interval
+			startTime = self.tconv(params.end) - interval
 		else:
 			interval = params.hours * 3600
-			startTime = tconv(params.start)
+			startTime = self.tconv(params.start)
 		return ct, startTime, interval
 
 
