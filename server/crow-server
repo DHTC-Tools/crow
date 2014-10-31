@@ -92,30 +92,26 @@ class frob(dict):
 		self[key] = value
 
 
-class crowhandler(object):
-	cacheignores = []
+class crowapp(object):
+	exposed = True
 
-	def __init__(self, app):
-		self.app = app
+	def __init__(self, mw, handler):
+		self.mw = mw
+		self.handler = handler
 		_ = hashlib.md5()
 		_.update(str(time.time()) + str(id(self)))
-		self.instance = _.hexdigest()[:8]
-		self.req = 0
-		self.dbserver, _ = self.app.config.getlist('db', 'default')
+		self.instance = handler.__name__ + '.' + _.hexdigest()[:8]
+		self.reqno = 0
+		self.dbserver, _ = self.mw.config.getlist('db', 'default')
 		self.client = pymongo.MongoClient(self.dbserver)
 
 	@cherrypy.tools.accept(media='application/json')
 	@cherrypy.tools.json_out()
 	@cherrypy.tools.json_in()
 	def POST(self, *args, **kwargs):
-		self.req += 1
-		reqid = self.instance + '.' + str(self.req)
-		def log(msg):
-			print '[%.3f %s] %s' % (time.time(), reqid, msg)
-			sys.stdout.flush()
-		log('request to /' + self.__class__.__name__)
-		return self.post(log, *args, **kwargs)
-
+		self.reqno += 1
+		handler = self.handler(self, cherrypy.request, self.reqno)
+		return handler(*args, **kwargs)
 
 	def getDB(self, pool):
 		if not pool.startswith('crow_'):
@@ -123,6 +119,20 @@ class crowhandler(object):
 		if hasattr(self.client, pool):
 			return getattr(self.client, pool)
 		return None
+
+
+class crowhandler(object):
+	cacheignores = []
+
+	def __init__(self, app, req, reqno):
+		self.app = app
+		self.request = req
+		self.reqno = reqno
+		self.reqid = self.app.instance + '.' + str(self.reqno)
+
+	def log(self, msg):
+		print '[%s %.3f] %s' % (self.reqid, time.time(), msg)
+		sys.stdout.flush()
 
 	def querykey(self, query):
 		md5 = hashlib.md5()
@@ -201,7 +211,7 @@ class crowhandler(object):
 
 	def readparams(self, params):
 		params = frob(params)
-		req = cherrypy.request.json
+		req = self.request.json
 		for key in params.keys():
 			if key in req:
 				params[key] = type(params[key])(req[key])
@@ -224,9 +234,6 @@ class crowhandler(object):
 class current(crowhandler):
 	exposed = True
 
-	# passing in log is janky, but without a proper handler/request model
-	# in cherrypy it's all we have for now.
-
 	cacheignores = [
 		# n.b. width doesn't affect queried data, so ignore that in /current queries
 		'width',
@@ -234,7 +241,7 @@ class current(crowhandler):
 		'current',
 	]
 
-	def post(self, log):
+	def __call__(self, *args, **kwargs):
 		params = self.readparams({
 			'pool': 'default',
 			'project': 'all',
@@ -244,7 +251,7 @@ class current(crowhandler):
 			'current': False,		# euphemism: current == True -> no caching please
 		})
 
-		db = self.getDB(params.pool)
+		db = self.app.getDB(params.pool)
 
 		t = timer().start()
 		rows = db.jobs.find(
@@ -262,12 +269,12 @@ class current(crowhandler):
 				'latest.ClusterId': 1,
 				'latest.Owner': 1,
 			})
-		log('t(mongodb) = %.5fs' % t.check())
+		self.log('t(mongodb) = %.5fs' % t.check())
 
 		count = 0
 		for r in rows:
 			count += 1
-		log('%d matching jobs' % count)
+		self.log('%d matching jobs' % count)
 
 		result = {
 			'plot': [
@@ -311,8 +318,8 @@ class starts(crowhandler):
 		'current',
 	]
 
-	def post(self, log):
-		log('initial postdata: %s' % cherrypy.request.json)
+	def __call__(self, *args, **kwargs):
+		self.log('initial postdata: %s' % self.request.json)
 
 		params = self.readparams({
 			'pool': 'default',
@@ -328,10 +335,10 @@ class starts(crowhandler):
 			'current': False,		# euphemism: current == True -> no caching please
 		})
 
-		db = self.getDB(params.pool)
+		db = self.app.getDB(params.pool)
 
 		ct, startTime, interval = self.tdomain(params)
-		log('interval = %d + %d (%s++)' % (startTime, interval, time.ctime(startTime)))
+		self.log('interval = %d + %d (%s++)' % (startTime, interval, time.ctime(startTime)))
 
 		if not params.bins:
 			params.bins = params.hours
@@ -345,13 +352,13 @@ class starts(crowhandler):
 		# cache check
 		if not params.current:
 			t = timer().start()
-			qkey, data, reason = self.cached(cherrypy.request, db, params)
+			qkey, data, reason = self.cached(self.request, db, params)
 			if data:
 				r = json.loads(data)
-				log('t(cache check %s %s) = %.5fs' % (qkey, reason, t.check()))
+				self.log('t(cache check %s %s) = %.5fs' % (qkey, reason, t.check()))
 				return r
 			else:
-				log('t(cache check %s %s) = %.5fs' % (qkey, reason, t.check()))
+				self.log('t(cache check %s %s) = %.5fs' % (qkey, reason, t.check()))
 
 		# need to tune the db selection based on $rel
 		select = self.standardfilter(params, startTime, interval)
@@ -369,8 +376,8 @@ class starts(crowhandler):
 				'latest.ClusterId': 1,
 				'latest.Owner': 1,
 			})
-		log('t(mongodb) = %.5fs' % t.check())
-		log('selector found %d jobs' % rows.count())
+		self.log('t(mongodb) = %.5fs' % t.check())
+		self.log('selector found %d jobs' % rows.count())
 
 		result = {}
 		result['plot'] = []
@@ -407,7 +414,7 @@ class starts(crowhandler):
 			for b in range(params.bins):
 				binstart = startTime + (b * binwidth)
 				pData[p].append([binstart * 1000, 0])
-		log('t(distinct) %.5fs' % t.check())
+		self.log('t(distinct) %.5fs' % t.check())
 
 		t = timer().start()
 		keyprop = rel[params.rel][1]
@@ -431,7 +438,7 @@ class starts(crowhandler):
 			for b in range(first, last+1):
 				pData[group][b][1] += 1
 				totals[group] += 1
-		log('t(binning) = %.5fs' % t.check())
+		self.log('t(binning) = %.5fs' % t.check())
 
 		# not sure why yet but some of these groups come up with zero counts.
 		# (this happens when the select finds jobs that binning excludes.)
@@ -452,7 +459,7 @@ class starts(crowhandler):
 		t = timer().start()
 		# even if we asked for no caches, we will take advantage and cache this result
 		qkey = self.cache(db, params, json.dumps(result))
-		log('t(cache %s) = %.5fs' % (qkey, t.check()))
+		self.log('t(cache %s) = %.5fs' % (qkey, t.check()))
 		return result
 
 
@@ -463,10 +470,10 @@ class distincts(crowhandler):
 	@cherrypy.tools.json_out()
 	@cherrypy.tools.json_in()
 
-	def post(self, log):
-		req = cherrypy.request.json
+	def __call__(self, *args, **kwargs):
+		req = self.request.json
 
-		db = self.getDB(req['pool'])
+		db = self.app.getDB(req['pool'])
 
 		interval = 720 * 3600
 		if 'interval' in req:
@@ -493,8 +500,8 @@ class crowmw(object):
 
 	def __init__(self, config):
 		self.config = config
-		self.starts = starts(self)
-		self.current = current(self)
+		self.starts = crowapp(self, starts)
+		self.current = crowapp(self, current)
 
 
 if __name__ == '__main__':	  
