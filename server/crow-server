@@ -437,8 +437,11 @@ class starts(crowhandler):
 			#if first > last:
 			#	print 'anomalous', r['_id']
 			for b in range(first, last+1):
-				pData[group][b][1] += 1
-				totals[group] += 1
+				try:
+					pData[group][b][1] += 1
+					totals[group] += 1
+				except IndexError:
+					pass
 		self.log('t(binning) = %.5fs' % t.check())
 
 		# not sure why yet but some of these groups come up with zero counts.
