@@ -23,6 +23,9 @@ import json
 import pymongo
 import cherrypy
 
+# Default cache time (seconds)
+CacheTime = 30 * 60
+
 # Ensure that all operations are done in UTC
 os.environ['TZ'] = 'UTC'
 time.tzset()
@@ -157,7 +160,7 @@ class crowhandler(object):
 			return qkey, None, 'expired'
 		return qkey, r['data'], 'ok'
 
-	def cache(self, db, query, data, lifetime=15*60):
+	def cache(self, db, query, data, lifetime=CacheTime):
 		qkey = self.querykey(query)
 		r = db.cache.find_one({'_id': qkey})
 		if r:
@@ -168,6 +171,21 @@ class crowhandler(object):
 			db.cache.insert({'_id': qkey,
 			                 'expires': time.time() + lifetime,
 			                 'data': data})
+		return qkey
+
+	def logquery(self, db, query):
+		qkey = self.querykey(query)
+		r = db.qstat.find_one({'_id': qkey})
+		if r:
+			db.qstat.update({'_id': qkey},
+			                {'count': r['count'] + 1,
+			                 'last': time.time(),
+			                 'query': json.dumps(query)})
+		else:
+			db.qstat.insert({'_id': qkey,
+			                 'count': 1,
+			                 'last': time.time(),
+			                 'query': json.dumps(query)})
 		return qkey
 
 	def mongofilter(self, f, expr):
@@ -349,6 +367,8 @@ class starts(crowhandler):
 			# if not an exact hour boundary, do one extra bin
 			params.bins += 1
 			startTime -= (startTime % 3600)
+
+		qkey = self.logquery(db, params)
 
 		# cache check
 		if not params.current:
