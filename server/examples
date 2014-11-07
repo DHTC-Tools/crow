@@ -1,0 +1,12 @@
+Example queries using CURL (outdated):
+
+cat d.json
+{ "method" : "guru.test", "params" : [ "Guru" ], "id" : 123 }
+
+curl -H 'Content-Type: application/json' -d @d.json "http://db.mwt2.org:8080/"
+curl -H 'Content-Type: application/json' -d @d.json "http://db.mwt2.org:8080/trace"
+curl -H "Accept: application/json" -X post "http://db.mwt2.org:8080/ips"
+curl -H "Accept: application/json" -X post "http://db.mwt2.org:8080/network?source=MWT2&destination=AGLT2"
+curl -H "Accept: application/json" -X post "http://db.mwt2.org:8080/distincts?hours=123
+curl -H "Accept: application/json" -H "Content-Type: application/json" -d @d.json "http://db.mwt2.org:8080/general"
+
