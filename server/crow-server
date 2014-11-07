@@ -1,4 +1,10 @@
 #!/usr/bin/env python
+#
+# When creating a new crow pool, the following mongo statements
+# should be issued:
+#
+#  db.cache.ensureIndex({"expires": 1 }, {expireAfterSeconds: 0})
+
 
 # curl -H 'Content-Type: application/json' -d @d.json "http://db.mwt2.org:8080/" 
 # curl -H 'Content-Type: application/json' -d @d.json "http://db.mwt2.org:8080/trace"
@@ -23,8 +29,12 @@ import json
 import pymongo
 import cherrypy
 
-# Default cache time (seconds)
-CacheTime = 30 * 60
+minute = 60
+hour = 60 * minute
+day = 24 * hour
+week = 7 * day
+month = 30 * day
+year = 365 * day
 
 # Ensure that all operations are done in UTC
 os.environ['TZ'] = 'UTC'
@@ -34,6 +44,22 @@ time.tzset()
 class Config(ConfigParser.RawConfigParser):
 	def getlist(self, section, option):
 		return [x.strip() for x in self.get(section, option).split(',')]
+
+
+def cacheduration(t):
+	# Cache duration is a stepwise function of request period
+	durations = [
+		# (if req period >, set cache duration to)
+		(0, hour),       # always cache at least 1 hour
+		(2*week, day),   # cache 2-week views for 1 day
+		(6*month, week), # cache 6-month views for 1 week
+	]
+
+	duration = 0
+	for treq, tdur in durations:
+		if t > treq:
+			duration = tdur
+	return duration
 
 
 class timer(object):
@@ -168,7 +194,7 @@ class crowhandler(object):
 			return qkey, None, 'expired (%.3fs)' % (r['expires'] - time.time())
 		return qkey, r['data'], 'ok'
 
-	def cache(self, db, query, data, lifetime=CacheTime):
+	def cache(self, db, query, data, lifetime=10*minute):
 		qkey = self.querykey(query)
 		r = db.cache.find_one({'_id': qkey})
 		if r:
@@ -283,7 +309,7 @@ class current(crowhandler):
 		t = timer().start()
 		rows = db.jobs.find(
 			self._and(
-				{'latest.QDate': {'$gt': time.time() - (86400 * 14)}},
+				{'latest.QDate': {'$gt': time.time() - (14*day)}},
 				{'latest.JobStatus': {'$in': [0, 1, 2, 5, 7]}},
 			),
 			{
@@ -492,7 +518,7 @@ class starts(crowhandler):
 
 		t = timer().start()
 		# even if we asked for no caches, we will take advantage and cache this result
-		qkey = self.cache(db, params, json.dumps(result))
+		qkey = self.cache(db, params, json.dumps(result), lifetime=cacheduration(interval))
 		self.log('t(cache %s) = %.5fs' % (qkey, t.check()))
 		return result
 
