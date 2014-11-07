@@ -102,6 +102,7 @@ class crowhandler(object):
 		self.request = req
 		self.reqno = reqno
 		self.reqid = self.app.instance + '.' + str(self.reqno)
+		self._usecache = True
 
 	def log(self, msg):
 		print '[%s %.3f] %s' % (self.reqid, time.time(), msg)
@@ -148,6 +149,13 @@ class crowhandler(object):
 			md5.update(str(query[key]))
 		return md5.hexdigest()[:8]
 
+	def usecache(self, req, params):
+		if params['current']:
+			return False
+		if 'X-Crow-RCache' in req.headers and req.headers['X-Crow-RCache'] == 'no':
+			return False
+		return True
+
 	def cached(self, req, db, query):
 		qkey = self.querykey(query)
 		if 'X-Crow-RCache' in req.headers and req.headers['X-Crow-RCache'] == 'no':
@@ -157,7 +165,7 @@ class crowhandler(object):
 			return qkey, None, 'uncached'
 		if r['expires'] < time.time():
 			# expired
-			return qkey, None, 'expired'
+			return qkey, None, 'expired (%.3fs)' % (r['expires'] - time.time())
 		return qkey, r['data'], 'ok'
 
 	def cache(self, db, query, data, lifetime=CacheTime):
@@ -368,10 +376,12 @@ class starts(crowhandler):
 			params.bins += 1
 			startTime -= (startTime % 3600)
 
-		qkey = self.logquery(db, params)
+		usecache = self.usecache(self.request, params)
+		if usecache:
+			self.logquery(db, params)
 
 		# cache check
-		if not params.current:
+		if usecache:
 			t = timer().start()
 			qkey, data, reason = self.cached(self.request, db, params)
 			if data:
