@@ -120,8 +120,7 @@ class crowhandler(object):
 		print '[%s %.3f] %s' % (self.reqid, time.time(), msg)
 		sys.stdout.flush()
 
-	@staticmethod
-	def tconv(s):
+	def tconv(self, s):
 		'''Converts time string to Epoch seconds (int).
 		If parsedatetime available, we can convert various English
 		expressions of time.  If not, we can only convert Epoch
@@ -131,7 +130,7 @@ class crowhandler(object):
 		try:
 			return int(s)
 		except ValueError:
-			tm, mode = pdt.parse(s)
+			tm, mode = self.pdt.parse(s)
 			ptm = list(tm)
 			tmnow = list(time.gmtime())
 
@@ -224,9 +223,20 @@ class crowhandler(object):
 		return { '$and': args }
 
 	def standardfilter(self, params, startTime, interval):
-		andFilters = [
-			#{'latest.JobStartDate': {'$lt': startTime + interval}},	# jobs that started before interval ended
-		]
+		andFilters = []
+
+		# jobs must have been queued before our interval ended
+		began_before_interval = {'lifecycle.queued': {'$lt': startTime + interval}}
+
+		# jobs must either be currently in queue...
+		in_queue = {'lifecycle.unobserved': 0}
+
+		# ...or have completed after our interval began
+		completed_after_interval = {'lifecycle.unobserved': {'$gt': startTime}}
+
+		andFilters.append(began_before_interval)
+		andFilters.append(self._or(in_queue, completed_after_interval))
+
 		if (params.project == 'all'):
 			andFilters.append({'latest.ProjectName': {'$exists': True}})
 		else:
@@ -238,14 +248,7 @@ class crowhandler(object):
 		if (params.task != 'all'):
 			andFilters.append({'latest.ClusterId': int(params.task)})
 
-		select = self._and(
-			self._or(
-				{'latest.CompletionDate': {'$exists': False}}, # select jobs that have not CompletionDate
-				{'latest.CompletionDate': 0}, # select jobs that have not CompletionDate
-				{'latest.CompletionDate': {'$gt': startTime}}, # and the ones that finished after startTime
-			),
-			*andFilters
-		);
+		select = self._and(*andFilters)
 		return select
 
 	def readparams(self, params):
@@ -402,6 +405,8 @@ class starts(crowhandler):
 				return r
 			else:
 				self.log('t(cache check %s %s) = %.5fs' % (qkey, reason, t.check()))
+		else:
+			self.log('no-cache')
 
 		# need to tune the db selection based on $rel
 		select = self.standardfilter(params, startTime, interval)
