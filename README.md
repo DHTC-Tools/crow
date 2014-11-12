@@ -53,3 +53,63 @@ latest record with the most recent ClassAd state.  At certain other
 transitional points (job status changes), the ClassAd set is also stored
 to coll.jobs.[].history.
 
+
+Packaging
+=========
+
+You can build crow as an RPM:
+
+	$ git clone https://github.com/DHTC-Tools/crow
+	$ cd crow
+	$ rpmbuild -ba package/crow.spec
+	$ yum localinstall ~/rpmbuild/RPMS/noarch/crow*rpm
+
+This will create an RPM based on the current clone at ~/rpmbuild/RPMS.
+
+Collector
+---------
+
+The collector (bin/crow) should run out of the box.  It sets up an init
+script at /etc/init.d/crow-collector.  If installing on a schedd
+server, you may wish to run:
+
+	$ sysconfig --add /etc/init.d/crow-collector
+	$ sysconfig crow-collector on
+
+Middleware
+----------
+The middleware works best with the Python module `parsedatetime'
+installed; we recommend installing with pip (since it's not in
+EPEL).
+
+	$ pip install parsedatetime
+
+Middleware also requires CherryPy to be installed.  It runs standalone,
+listening on port 8081 by default.  You can configure this in
+server/crow-server.conf.  We run it from the git directory directly;
+it doesn't have a real installation location at present.
+
+	$ server/crow-server
+
+
+HTML
+----
+The HTML is how the visualization is served.  This is not presently
+very highly configurable.  For insulation from cross-site scripting
+protections in the browser, AJAX queries from the HTML always go to
+the server the HTML was loaded from, to the path: `/service/mongo-crow/'.
+In apache you can configure this path as a proxy to the Middleware
+server's location.  For example, if the middleware runs on
+www.example.org:8081, you could write:
+
+	ProxyPass /service/mongo-crow  http://www.example.org:8081/
+
+
+Misc
+----
+Both the collector and the middleware require access to a MongoDB
+server.  You can configure the server params at /etc/crow.ini.  The
+collector also needs to be configured at /etc/sysconfig/crow before
+starting the service:
+
+	$ service start crow-collector
