@@ -1,0 +1,15 @@
+#!/bin/sh
+
+
+timed () {
+	echo
+	echo === $(date)
+	echo === $@
+	time "$@" >/dev/null
+}
+
+timed /usr/local/cron/crow-db-cache 1 2 4
+timed /usr/local/cron/crow-db-cache 8 16 24
+timed /usr/local/cron/crow-db-cache 48 72 168
+timed /usr/local/cron/crow-db-cache 720 8760
+
