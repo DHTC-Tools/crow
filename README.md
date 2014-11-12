@@ -54,8 +54,8 @@ transitional points (job status changes), the ClassAd set is also stored
 to coll.jobs.[].history.
 
 
-Packaging
-=========
+Packaging & Installation
+========================
 
 You can build crow as an RPM:
 
