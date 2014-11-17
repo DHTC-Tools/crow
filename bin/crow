@@ -38,6 +38,8 @@ default = mongodb://mongodbserver:27017, crow_%(brand)s
 
 [condor]
 historyfile = /var/lib/condor/spool/history
+
+[classads]
 # This adfilter will accept all classads. Use a Matcher expression
 # to exclude or include classads by name.
 adfilter = /.*/
@@ -983,8 +985,8 @@ class main(object):
 		if self.cfg.has_section('ensure'):
 			jobactions.append(EnsureFilter.fromconfig(self.cfg))
 
-		if self.cfg.has_option('condor', 'adfilter'):
-			jobactions.append(AdFilter(self.cfg.get('condor', 'adfilter') + ' GlobalJobId or'))
+		if self.cfg.has_option('classads', 'adfilter'):
+			jobactions.append(AdFilter(self.cfg.get('classads', 'adfilter') + ' GlobalJobId or'))
 
 		self.mode = cmd
 
