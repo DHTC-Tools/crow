@@ -9,8 +9,8 @@ db = default
 [db]
 default = mongodb://mongodbserver:27017, crow_%(brand)s
 
-[condor]
-historyfile = /var/lib/condor/spool/history
+[history]
+file = /var/lib/condor/spool/history
 
 [classads]
 # This adfilter will accept all classads. Use a Matcher expression

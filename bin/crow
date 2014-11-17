@@ -36,8 +36,8 @@ pidfile = /var/run/crow-%(brand)s-%(mode)s.pid
 [db]
 default = mongodb://mongodbserver:27017, crow_%(brand)s
 
-[condor]
-historyfile = /var/lib/condor/spool/history
+[history]
+file = /var/lib/condor/spool/history
 
 [classads]
 # This adfilter will accept all classads. Use a Matcher expression
@@ -1135,7 +1135,7 @@ class main(object):
 					w.setlog(logger)
 					w.watch(actions)
 			else:
-				file = self.cfg.get('condor', 'historyfile')
+				file = self.cfg.get('history', 'file')
 				w = HistoryWatcher(file, interval=interval, hooks=self.hooks)
 				w.setlog(logger)
 				w.watch(actions)
