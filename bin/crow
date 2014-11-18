@@ -52,6 +52,24 @@ local = schedd, interval=60
 # Source is a file name containing condor history records.
 /var/lib/condor/spool/history = schedd, interval=30
 
+[collector]
+# Source is the hostname / pool name of a collector daemon.
+# N.B. it is possible but not recommended to use the same DLN for
+# a schedd queue and a collector. This is because the same job,
+# retrieved from a schedd on one hand a collector on the other,
+# can have overlapping but different classads.  You can do this if
+# you know that's OK, but it's not a given that you want all queue
+# entries stomped over by the collector entries (or vice versa).
+# An easy workaround is just to define a slight variant of the DLN
+# that uses a differing table name. Use one DLN when looking up
+# jobs as known to the collector, and another when looking up
+# jobs (perhaps the same jobs, perhaps not) as known to the schedd.
+#
+# A collector may possess jobs not known to the scheduler, and vice
+# versa.  They are intersecting sets, but neither is necessarily a
+# subset of the other.
+#flockto.example.com = collector, interval=90
+
 [classads]
 # This adfilter will accept all classads. Use a Matcher expression
 # to exclude or include classads by name.
@@ -235,38 +253,6 @@ class Watcher(object):
 		return dbs, params
 
 
-class QueueWatcher(Watcher):
-	'''QueueWatcher creates a relationship to a schedd or collector, so
-	that it can be queried for running jobs.'''
-
-	eventtype = 'queue'
-
-	def __init__(self, schedd, collector=None, hooks={}, interval=30, logger=None):
-		Watcher.__init__(self, hooks=hooks, interval=interval, logger=logger)
-
-		if schedd == 'local':
-			schedd = None
-
-		if schedd:
-			if not collector:
-				raise TypeError, 'QueueWatcher with nonlocal schedd requires collector name also'
-			def reconnect():
-				coll = htcondor.Collector(collector)
-				ad = coll.locate(htcondor.DaemonTypes.Schedd, schedd)
-				self.source = htcondor.Schedd(ad)
-
-		elif collector:
-			def reconnect():
-				self.source = htcondor.Collector(collector)
-
-		else:
-			def reconnect():
-				self.source = htcondor.Schedd()
-
-		self.reconnect = reconnect
-		self.reconnect()
-
-
 	@staticmethod
 	def stringify(snapshot):
 		'''Ensure that each value in a job snapshot (a dict of
@@ -281,15 +267,42 @@ class QueueWatcher(Watcher):
 		return new
 
 
+class CollectorWatcher(Watcher):
+	'''CollectorWatcher creates a relationship to a collector, so that it can be
+	queried for scheduled jobs.
+	'''
+
+	eventtype = 'collector'
+
+	def __init__(self, pool, hooks={}, interval=30, logger=None):
+		Watcher.__init__(self, hooks=hooks, interval=interval, logger=logger)
+
+		def reconnect():
+			self.source = htcondor.Collector(pool)
+
+		self.reconnect = reconnect
+		self.reconnect()
+
+
 	def watch(self, jobactions):
 		self.hookctx = frob()
 		while True:
 			self.hookctx.count = 0
 
+			# Two things.
+			# A. Collectors can give results from ANY_AD queries that
+			#    are not available from any other adtype query. They're
+			#    mysterious denizens of the condor ether.
+			# 2. We should collect all the other adtypes also, and do
+			#    something clever with them in the database.  It would
+			#    allow charting metrics across time, deltas among different
+			#    schedulers, etc.
+
 			try:
-				jobs = self.source.query()
+				# Right now we're only getting jobs (AdTypes.Startd)
+				jobs = self.source.query(htcondor.AdTypes.Startd)
 			except Exception, e:
-				self.log('crow queue %s: %s (reconnecting)', time.strftime('%Y%m%dT%H%M%S'), str(e))
+				self.log('crow %s %s: %s (reconnecting)', self.eventtype, time.strftime('%Y%m%dT%H%M%S'), str(e))
 				self.reconnect()
 				continue
 
@@ -312,7 +325,45 @@ class QueueWatcher(Watcher):
 
 			if self.hooks['end'](self, jobs) is False:
 				break
-			time.sleep(self.interval)
+			time.sleep(float(self.interval))
+
+
+class QueueWatcher(CollectorWatcher):
+	'''QueueWatcher is just like a CollectorWatcher, except it refines the pool
+	information to query only a single scheduler.
+
+	HTCondor needs either NO arguments (to connect to the local schedd)
+	or TWO arguments (to connect to a given pool/collector on a given schedd).
+	Since the Watcher protocol takes only one argument, we separate these by
+	a colon.  If the argument is None or "local", then we connect to the local
+	schedd.
+	'''
+
+	eventtype = 'queue'
+
+	def __init__(self, source, hooks={}, interval=30, logger=None):
+		Watcher.__init__(self, hooks=hooks, interval=interval, logger=logger)
+
+		if source == 'local':
+			source = None
+
+		if source:
+			# need a : in the name
+			if ':' not in schedd:
+				raise TypeError, 'QueueWatcher with nonlocal schedd requires pool name also (schedd:pool)'
+
+			schedd, pool = schedd.split(':', 1)
+			def reconnect():
+				coll = htcondor.Collector(pool)
+				ad = coll.locate(htcondor.DaemonTypes.Schedd, schedd)
+				self.source = htcondor.Schedd(ad)
+
+		else:
+			def reconnect():
+				self.source = htcondor.Schedd()
+
+		self.reconnect = reconnect
+		self.reconnect()
 
 
 class HistoryWatcher(Watcher):
@@ -383,7 +434,7 @@ class HistoryWatcher(Watcher):
 				self._fp = None
 				if self.interval is None:
 					return
-				time.sleep(self.interval)
+				time.sleep(float(self.interval))
 
 		# history file now exists, and is open
 
@@ -402,7 +453,7 @@ class HistoryWatcher(Watcher):
 					self._fp.close()
 					self._fp = None
 				if not s:
-					time.sleep(self.interval)
+					time.sleep(float(self.interval))
 					continue
 
 			jobactions.begin([])
@@ -437,7 +488,7 @@ class HistoryWatcher(Watcher):
 				# no interval delay if file cycles - scan new one immediately
 
 			else:
-				time.sleep(self.interval)
+				time.sleep(float(self.interval))
 
 
 
@@ -958,8 +1009,9 @@ class main(object):
 		return getattr(self, k)
 
 
-	def thread(self, subtitle):
-		title = self.proctitle + (' [%s]' % subtitle)
+	def thread(self, id):
+		self.threadid = id
+		title = self.proctitle + (' [%s]' % id)
 		pid = os.fork()
 		if pid == 0:
 			setproctitle(title)
@@ -1043,8 +1095,24 @@ class main(object):
 
 		self.threadid = cmd
 
-		if cmd == 'printconf':
+		if cmd == 'initconf':
+			# You can use 'crow initconf >/etc/crow.ini'
+			# to start your installation.
+			sys.stdout.write(DefaultConfig)
+
+		elif cmd == 'printconf':
+			# Use 'crow printconf' to merge several configurations
+			# together and show the result.  This loses comments,
+			# though, which is why it's not a supercase of initconf.
 			self.cfg.write(sys.stdout)
+
+		elif cmd == 'initconf':
+			# You can use 'crow initconf >/etc/crow.ini'
+			# to start your installation.
+			sys.stdout.write(DefaultConfig)
+
+		elif cmd == 'coll' or cmd == 'collector':
+			self.eventwatch_all(CollectorWatcher, args, jobactions, parallel=False)
 
 		elif cmd == 'queue':
 			self.eventwatch_all(QueueWatcher, args, jobactions, parallel=False)
@@ -1064,6 +1132,7 @@ class main(object):
 
 			pids += self.eventwatch_all(QueueWatcher, args, jobactions, parallel=True)
 			pids += self.eventwatch_all(HistoryWatcher, args, jobactions, parallel=True)
+			pids += self.eventwatch_all(CollectorWatcher, args, jobactions, parallel=True)
 
 			try:
 				for pid in pids:
@@ -1124,7 +1193,7 @@ class main(object):
 			pass
 
 	def eventwatch(self, cls, source, spec, actions):
-		#print cls.eventtype, source, cls.parse(spec)
+		#print cls, cls.eventtype, source, cls.parse(spec)
 		#return 0
 		try:
 			self.threadid = cls.eventtype + ':' + source.replace('/', '_')
@@ -1140,6 +1209,7 @@ class main(object):
 
 			databases = self.globaldbs + dbs
 			for name in databases:
+				#print 'db open', name, self.dbdefs[name]
 				db = CrowDB.open(self.dbdefs[name])
 				db.setlog(logger)
 				actions.append(DBUpdater(name, db, **cls.updaterargs))
@@ -1165,13 +1235,16 @@ class main(object):
 
 		if args:
 			items = [self.parseargument(arg) for arg in args]
-		else:
+		elif self.cfg.has_section(cls.eventtype):
 			items = self.cfg.items(cls.eventtype)
+		else:
+			items = []
+		items = list(items)
 
 		# ideally we allow specifying single/multiple items on cmd line here
 		if parallel:
 			for source, spec in items:
-				pid = self.thread(cls.eventtype)
+				pid = self.thread(cls.eventtype + ':' + source.replace('/', '_'))
 				if pid == 0:
 					sys.exit(self.eventwatch(cls, source, spec, actions))
 				pids.append(pid)

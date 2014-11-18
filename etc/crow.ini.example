@@ -27,6 +27,24 @@ local = schedd, interval=60
 # Source is a file name containing condor history records.
 /var/lib/condor/spool/history = schedd, interval=30
 
+[collector]
+# Source is the hostname / pool name of a collector daemon.
+# N.B. it is possible but not recommended to use the same DLN for
+# a schedd queue and a collector. This is because the same job,
+# retrieved from a schedd on one hand a collector on the other,
+# can have overlapping but different classads.  You can do this if
+# you know that's OK, but it's not a given that you want all queue
+# entries stomped over by the collector entries (or vice versa).
+# An easy workaround is just to define a slight variant of the DLN
+# that uses a differing table name. Use one DLN when looking up
+# jobs as known to the collector, and another when looking up
+# jobs (perhaps the same jobs, perhaps not) as known to the schedd.
+#
+# A collector may possess jobs not known to the scheduler, and vice
+# versa.  They are intersecting sets, but neither is necessarily a
+# subset of the other.
+#condor.example.com = collector, interval=90
+
 [classads]
 # This adfilter will accept all classads. Use a Matcher expression
 # to exclude or include classads by name.
