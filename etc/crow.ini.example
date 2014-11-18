@@ -6,10 +6,10 @@ log = /var/log/crow-%(brand)s-%(threadid)s.log
 pidfile = /var/run/crow-%(brand)s-%(threadid)s.pid
 
 [db]
-# This section associates database logical names (DLNs) to (server, database)
-# pairs.  The DLNs are referenced below, in [queue] and [history] sections.
-schedd = mongodb://mongodbserver:27017, crow_%(brand)s
-collector = mongodb://mongodbserver:27017, crow_coll_%(brand)s
+# This section associates database logical names (DLNs) to (server/database)
+# info.  The DLNs are referenced below, in [queue] and [history] sections.
+schedd = mongodb://mongodbserver:27017/crow_%(brand)s
+collector = mongodb://mongodbserver:27017/crow_coll_%(brand)s
 
 # Watcher configurations: entries in [queue] and [history] sections
 # are in this format:

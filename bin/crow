@@ -27,14 +27,14 @@ DefaultConfig = '''
 debug = false
 brand = generic
 detach = false
-log = /var/log/crow-%(brand)s-%(threadid)s.log
+log = /var/log/crow/crow-%(brand)s-%(threadid)s.log
 pidfile = /var/run/crow-%(brand)s-%(threadid)s.pid
 
 [db]
-# This section associates database logical names (DLNs) to (server, database)
-# pairs.  The DLNs are referenced below, in [queue] and [history] sections.
-schedd = mongodb://mongodbserver:27017, crow_%(brand)s
-collector = mongodb://mongodbserver:27017, crow_coll_%(brand)s
+# This section associates database logical names (DLNs) to server/database
+# info.  The DLNs are referenced below, in [queue] and [history] sections.
+schedd = mongodb://mongodbserver:27017/crow_%(brand)s
+collector = mongodb://mongodbserver:27017/crow_coll_%(brand)s
 
 # Watcher configurations: entries in [queue] and [history] sections
 # are in this format:
@@ -226,11 +226,12 @@ class Watcher(object):
 		dbs = []
 		params = {}
 		for arg in spec.split(','):
+			arg = arg.strip()
 			if '=' in arg:
 				k, v = arg.split('=', 1)
 				params[k.strip()] = v.strip()
-			else:
-				dbs.append(arg.strip())
+			elif arg:
+				dbs.append(arg)
 		return dbs, params
 
 
@@ -571,11 +572,12 @@ class CrowMongo(CrowDB):
 	def __init__(self, *args, **kwargs):
 		CrowDB.__init__(self, *args, **kwargs)
 
-		addr = args[0]
-		if len(args) > 1:
-			dbname = args[1]
+		uri = args[0]
+		lhs, rhs = uri.split('://')
+		if '/' in rhs:
+			addr, dbname = rhs.split('/', 1)
 		else:
-			dbname = 'crow'
+			addr, dbname = rhs, 'crow'
 
 		try:
 			conn = pymongo.MongoClient(addr)
@@ -670,6 +672,7 @@ class CrowDebug(CrowDB):
 		CrowDB.__init__(self, *args, **kwargs)
 		self.pprint = __import__('pprint')
 		self.extradebug = False
+		self.level = 1
 
 	def setopts(self, *args, **kwargs):
 		if 'level' in kwargs:
@@ -1014,10 +1017,12 @@ class main(object):
 		}
 
 		errs = 0
-		self.dbdefs = {}
+		self.dbdefs = {
+			'debug': 'debug'
+		}
 		for name, dbargs in self.cfg.items('db'):
 			# this here replaces %(brand)s in the values in [db] from local vars
-			self.dbdefs[name] = [arg.strip() % self for arg in dbargs.split(',')]
+			self.dbdefs[name] = dbargs.strip() % self
 		for name in self.globaldbs:
 			if name not in self.dbdefs:
 				print >>sys.stderr, 'no database named "%s" in configuration' % name
@@ -1135,7 +1140,7 @@ class main(object):
 
 			databases = self.globaldbs + dbs
 			for name in databases:
-				db = CrowDB.open(*self.dbdefs[name])
+				db = CrowDB.open(self.dbdefs[name])
 				db.setlog(logger)
 				actions.append(DBUpdater(name, db, **cls.updaterargs))
 
