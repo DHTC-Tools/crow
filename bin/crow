@@ -202,6 +202,9 @@ class FileDescLogger(FileLogger):
 			self.close = lambda: None
 
 class Watcher(object):
+	eventtype = 'generic'	# This should be overridden
+	updaterargs = {}
+
 	def __init__(self, hooks={}, interval=30, logger=None):
 		self.hooks = {
 			'begin': lambda w, jobs: True,
@@ -234,6 +237,8 @@ class Watcher(object):
 class QueueWatcher(Watcher):
 	'''QueueWatcher creates a relationship to a schedd or collector, so
 	that it can be queried for running jobs.'''
+
+	eventtype = 'queue'
 
 	def __init__(self, schedd, collector=None, hooks={}, interval=30, logger=None):
 		Watcher.__init__(self, hooks=hooks, interval=interval, logger=logger)
@@ -310,6 +315,10 @@ class QueueWatcher(Watcher):
 
 
 class HistoryWatcher(Watcher):
+
+	eventtype = 'history'
+	updaterargs = {'fromhistory': True}
+
 	def __init__(self, file, hooks={}, interval=30, logger=None):
 		Watcher.__init__(self, hooks=hooks, interval=interval, logger=logger)
 		self._file = file
@@ -1033,10 +1042,10 @@ class main(object):
 			self.cfg.write(sys.stdout)
 
 		elif cmd == 'queue':
-			self.queue_all(args, jobactions, parallel=False)
+			self.eventwatch_all(QueueWatcher, args, jobactions, parallel=False)
 
 		elif cmd == 'history':
-			self.history_all(args, jobactions, parallel=False)
+			self.eventwatch_all(HistoryWatcher, args, jobactions, parallel=False)
 
 		elif cmd == 'master':
 			self.pidfile = self.cfg.get('crow', 'pidfile') % self
@@ -1048,8 +1057,8 @@ class main(object):
 					return 0
 			self.mkpid()
 
-			pids += self.queue_all(args, jobactions, parallel=True)
-			pids += self.history_all(args, jobactions, parallel=True)
+			pids += self.eventwatch_all(QueueWatcher, args, jobactions, parallel=True)
+			pids += self.eventwatch_all(HistoryWatcher, args, jobactions, parallel=True)
 
 			try:
 				for pid in pids:
@@ -1109,19 +1118,17 @@ class main(object):
 		except:
 			pass
 
-	# XXX TODO: collapse queue and history into one method
-
-	def queue(self, source, spec, actions):
-		#print 'queue', source, QueueWatcher.parse(spec)
+	def eventwatch(self, cls, source, spec, actions):
+		#print cls.eventtype, source, cls.parse(spec)
 		#return 0
 		try:
-			self.threadid = 'queue:' + source
+			self.threadid = cls.eventtype + ':' + source.replace('/', '_')
 			self.mkpid()
 			if self.logfile is None:
 				self.logfile = self.cfg.get('crow', 'log') % self
 			logger = Logger.open(self.logfile)
 
-			dbs, params = QueueWatcher.parse(spec)
+			dbs, params = cls.parse(spec)
 			if self.interval:
 				params['interval'] = self.interval
 			params['hooks'] = self.hooks
@@ -1130,38 +1137,9 @@ class main(object):
 			for name in databases:
 				db = CrowDB.open(*self.dbdefs[name])
 				db.setlog(logger)
-				actions.append(DBUpdater(name, db))
+				actions.append(DBUpdater(name, db, **cls.updaterargs))
 
-			w = QueueWatcher(source, **params)
-			w.setlog(logger)
-			w.watch(actions)
-			return 0
-		except KeyboardInterrupt:
-			self.rmpid()
-			return 255
-
-	def history(self, source, spec, actions):
-		#print 'queue', source, HistoryWatcher.parse(spec)
-		#return 0
-		try:
-			self.threadid = 'history:' + source.replace('/', '_')
-			self.mkpid()
-			if self.logfile is None:
-				self.logfile = self.cfg.get('crow', 'log') % self
-			logger = Logger.open(self.logfile)
-
-			dbs, params = HistoryWatcher.parse(spec)
-			if self.interval:
-				params['interval'] = self.interval
-			params['hooks'] = self.hooks
-
-			databases = self.globaldbs + dbs
-			for name in databases:
-				db = CrowDB.open(*self.dbdefs[name])
-				db.setlog(logger)
-				actions.append(DBUpdater(name, db, fromhistory=True))
-
-			w = HistoryWatcher(source, **params)
+			w = cls(source, **params)
 			w.setlog(logger)
 			w.watch(actions)
 			return 0
@@ -1177,45 +1155,24 @@ class main(object):
 		else:
 			return arg, ''
 
-	# XXX TODO: collapse queue_all and history_all into one method
-
-	def queue_all(self, args, actions, parallel=False):
+	def eventwatch_all(self, cls, args, actions, parallel=False):
 		pids = []
 
 		if args:
 			items = [self.parseargument(arg) for arg in args]
 		else:
-			items = self.cfg.items('queue')
+			items = self.cfg.items(cls.eventtype)
 
 		# ideally we allow specifying single/multiple items on cmd line here
 		if parallel:
 			for source, spec in items:
-				pid = self.thread('queue')
+				pid = self.thread(cls.eventtype)
 				if pid == 0:
-					sys.exit(self.queue(source, spec, actions))
+					sys.exit(self.eventwatch(cls, source, spec, actions))
 				pids.append(pid)
 		else:
 			for source, spec in items:
-				self.queue(source, spec, actions)
-		return pids
-
-	def history_all(self, args, actions, parallel=False):
-		pids = []
-
-		if args:
-			items = [self.parseargument(arg) for arg in args]
-		else:
-			items = self.cfg.items('history')
-
-		if parallel:
-			for source, spec in items:
-				pid = self.thread('history')
-				if pid == 0:
-					sys.exit(self.history(source, spec, actions))
-				pids.append(pid)
-		else:
-			for source, spec in items:
-				self.history(source, spec, actions)
+				self.eventwatch(cls, source, spec, actions)
 		return pids
 
 if __name__ == '__main__':
