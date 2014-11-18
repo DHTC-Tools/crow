@@ -27,8 +27,8 @@ DefaultConfig = '''
 debug = false
 brand = generic
 detach = false
-log = /var/log/crow-%(brand)s-%(mode)s.log
-pidfile = /var/run/crow-%(brand)s-%(mode)s.pid
+log = /var/log/crow-%(brand)s-%(threadid)s.log
+pidfile = /var/run/crow-%(brand)s-%(threadid)s.pid
 
 [db]
 # This section associates database logical names (DLNs) to (server, database)
@@ -1027,7 +1027,7 @@ class main(object):
 		if self.cfg.has_option('classads', 'adfilter'):
 			jobactions.append(AdFilter(self.cfg.get('classads', 'adfilter') + ' GlobalJobId or'))
 
-		self.mode = cmd
+		self.threadid = cmd
 
 		if cmd == 'printconf':
 			self.cfg.write(sys.stdout)
@@ -1115,7 +1115,7 @@ class main(object):
 		#print 'queue', source, QueueWatcher.parse(spec)
 		#return 0
 		try:
-			self.mode = 'queue'
+			self.threadid = 'queue:' + source
 			self.mkpid()
 			if self.logfile is None:
 				self.logfile = self.cfg.get('crow', 'log') % self
@@ -1144,7 +1144,7 @@ class main(object):
 		#print 'queue', source, HistoryWatcher.parse(spec)
 		#return 0
 		try:
-			self.mode = 'history'
+			self.threadid = 'history:' + source.replace('/', '_')
 			self.mkpid()
 			if self.logfile is None:
 				self.logfile = self.cfg.get('crow', 'log') % self
