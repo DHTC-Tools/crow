@@ -1,16 +1,31 @@
 [crow]
 debug = false
 brand = generic
-historyinterval = 30
-queueinterval = 60
 detach = true
-db = default
+log = /var/log/crow-%(brand)s-%(threadid)s.log
+pidfile = /var/run/crow-%(brand)s-%(threadid)s.pid
 
 [db]
-default = mongodb://mongodbserver:27017, crow_%(brand)s
+# This section associates database logical names (DLNs) to (server, database)
+# pairs.  The DLNs are referenced below, in [queue] and [history] sections.
+schedd = mongodb://mongodbserver:27017, crow_%(brand)s
+collector = mongodb://mongodbserver:27017, crow_coll_%(brand)s
+
+# Watcher configurations: entries in [queue] and [history] sections
+# are in this format:
+#   source = database[, database][, interval=30]
+# "source" varies for each section.  Database is a DLN defined above in [dn],
+# and interval, if specified, is how many seconds should elapse between
+# probes to a data source.
+
+[queue]
+# Source is "local" for the local schedd, or a hostname for a remote schedd.
+# (The latter is untested, though.)
+local = schedd, interval=60
 
 [history]
-file = /var/lib/condor/spool/history
+# Source is a file name containing condor history records.
+/var/lib/condor/spool/history = schedd, interval=30
 
 [classads]
 # This adfilter will accept all classads. Use a Matcher expression
