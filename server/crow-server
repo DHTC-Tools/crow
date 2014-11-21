@@ -27,6 +27,16 @@ os.environ['TZ'] = 'UTC'
 time.tzset()
 
 
+def parsebool(s):
+	if hasattr(s, 'lower'):
+		s = s.lower()
+	if s in ('no', 'off', 'false'):
+		return False
+	if s == 0:
+		return False
+	return True
+
+
 class Config(ConfigParser.RawConfigParser):
 	def getlist(self, section, option):
 		return [x.strip() for x in self.get(section, option).split(',')]
@@ -161,7 +171,7 @@ class crowhandler(object):
 		return md5.hexdigest()[:8]
 
 	def usecache(self, req, params):
-		if params['current']:
+		if 'current' in params and params['current'] in (True, 'true'):
 			return False
 		if 'X-Crow-RCache' in req.headers and req.headers['X-Crow-RCache'] == 'no':
 			return False
@@ -251,12 +261,16 @@ class crowhandler(object):
 		select = self._and(*andFilters)
 		return select
 
-	def readparams(self, params):
-		params = frob(params)
+	def readparams(self, template):
+		# We could optimize slightly here by moving this to the caller
+		# and doing it only once per instance of the server.  But hold
+		# out - this is a slim gain.
+		params = frob([(k, v) for k, (v, parser) in template.items()])
+		parsers = frob([(k, parser) for k, (v, parser) in template.items()])
 		req = self.request.json
 		for key in params.keys():
 			if key in req:
-				params[key] = type(params[key])(req[key])
+				params[key] = parsers[key](req[key])
 		return params
 
 	def tdomain(self, params):
@@ -285,12 +299,12 @@ class current(crowhandler):
 
 	def __call__(self, *args, **kwargs):
 		params = self.readparams({
-			'pool': 'default',
-			'project': 'all',
-			'user': 'all',
-			'task': 'all',
-			'groupby': 'ProjectName',
-			'current': False,		# euphemism: current == True -> no caching please
+			'pool': ['default', str],
+			'project': ['all', str],
+			'user': ['all', str],
+			'task': ['all', str],
+			'groupby': ['ProjectName', str],
+			'current': [False, parsebool],		# euphemism: current == True -> no caching please
 		})
 
 		db = self.app.getDB(params.pool)
@@ -364,17 +378,17 @@ class starts(crowhandler):
 		self.log('initial postdata: %s' % self.request.json)
 
 		params = self.readparams({
-			'pool': 'default',
-			'project': 'all',
-			'user': 'all',
-			'task': 'all',
-			'groupby': 'ProjectName',
-			'rel': 'running',
-			'start': 'default',
-			'end': 'default',
-			'hours': 0,
-			'bins': 0,
-			'current': False,		# euphemism: current == True -> no caching please
+			'pool': ['default', str],
+			'project': ['all', str],
+			'user': ['all', str],
+			'task': ['all', str],
+			'groupby': ['ProjectName', str],
+			'rel': ['running', str],
+			'start': ['default', str],
+			'end': ['default', str],
+			'hours': [0, int],
+			'bins': [0, int],
+			'current': ['false', parsebool],		# euphemism: current == True -> no caching please
 		})
 
 		db = self.app.getDB(params.pool)
