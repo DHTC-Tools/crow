@@ -46,9 +46,11 @@ def cacheduration(t):
 	# Cache duration is a stepwise function of request period
 	durations = [
 		# (if req period >, set cache duration to)
-		(0, hour),       # always cache at least 1 hour
-		(2*week, day),   # cache 2-week views for 1 day
-		(6*month, week), # cache 6-month views for 1 week
+		(0, minute),         # cache low values only briefly
+		(2*hour, 10*minute),  # above 2h, cache 10 minutes
+		(day, hour),         # above a day, cache 1 hour
+		(2*week, day),       # cache 2-week views for 1 day
+		(6*month, week),     # cache 6-month views for 1 week
 	]
 
 	duration = 0
@@ -271,9 +273,10 @@ class crowhandler(object):
 		for key in params.keys():
 			if key in req:
 				params[key] = parsers[key](req[key])
-		return params
+		db = self.app.getDB(params.pool)
+		return db, params
 
-	def tdomain(self, params):
+	def timedomain(self, params):
 		ct = int(time.time())
 		if params.start == 'default' and params.end == 'default':
 			interval = params.hours * 3600
@@ -284,6 +287,7 @@ class crowhandler(object):
 		else:
 			interval = params.hours * 3600
 			startTime = self.tconv(params.start)
+		self.log('interval = %d + %d (%s++)' % (startTime, interval, time.ctime(startTime)))
 		return ct, startTime, interval
 
 
@@ -298,7 +302,7 @@ class current(crowhandler):
 	]
 
 	def __call__(self, *args, **kwargs):
-		params = self.readparams({
+		db, params = self.readparams({
 			'pool': ['default', str],
 			'project': ['all', str],
 			'user': ['all', str],
@@ -306,8 +310,6 @@ class current(crowhandler):
 			'groupby': ['ProjectName', str],
 			'current': [False, parsebool],		# euphemism: current == True -> no caching please
 		})
-
-		db = self.app.getDB(params.pool)
 
 		t = timer().start()
 		rows = db.jobs.find(
@@ -357,16 +359,9 @@ class current(crowhandler):
 class starts(crowhandler):
 	exposed = True
 
-	# QDate = 1410041462
-	# JobCurrentStartDate = 1410041468
-	# JobStartDate = 1410041468
-	# LastMatchTime = 1410041468
-	# JobCurrentStartExecutingDate = 1410041470
-	# CompletionDate = 1410041471
-	# EnteredCurrentStatus = 1410041471
-	# JobFinishedHookDone = 1410041471
-	# LastJobLeaseRenewal = 1410041471
-
+	# caching is indexed by the query string, alphasorted by key name. But
+	# some query params should not differentiate one qstring from another --
+	# we want to ignore them for the purpose of generating a cache hash.
 	cacheignores = [
 		# n.b. width doesn't affect queried data, so ignore that in /current queries
 		'width',
@@ -377,7 +372,7 @@ class starts(crowhandler):
 	def __call__(self, *args, **kwargs):
 		self.log('initial postdata: %s' % self.request.json)
 
-		params = self.readparams({
+		db, params = self.readparams({
 			'pool': ['default', str],
 			'project': ['all', str],
 			'user': ['all', str],
@@ -391,22 +386,26 @@ class starts(crowhandler):
 			'current': ['false', parsebool],		# euphemism: current == True -> no caching please
 		})
 
-		db = self.app.getDB(params.pool)
-
-		ct, startTime, interval = self.tdomain(params)
-		self.log('interval = %d + %d (%s++)' % (startTime, interval, time.ctime(startTime)))
+		ct, startTime, interval = self.timedomain(params)
 
 		if not params.bins:
 			params.bins = params.hours
+
 		binwidth = interval / params.bins
 
-		if startTime % 3600:
-			# if not an exact hour boundary, do one extra bin
+		if startTime % binwidth:
+			# if not an exact bin boundary, do one extra bin
 			params.bins += 1
-			startTime -= (startTime % 3600)
+			startTime -= (startTime % binwidth)
 
 		usecache = self.usecache(self.request, params)
 		if usecache:
+			# Query logging is for determining what the most in-demand
+			# queries are.  Don't log queries that refuse the cache;
+			# these are most likely cache-loading queries, so would
+			# have artificially inflated scores if logged.  And if such
+			# a query belongs to a live user, they're obvs asking for
+			# an uncached result, so why use this as a caching metric?
 			self.logquery(db, params)
 
 		# cache check
@@ -439,7 +438,16 @@ class starts(crowhandler):
 				'latest.Owner': 1,
 			})
 		self.log('t(mongodb) = %.5fs' % t.check())
-		self.log('selector found %d jobs' % rows.count())
+
+		t = timer().start()
+		rows = list(rows)
+		self.log('t(retrieval) %.5fs' % t.check())
+
+		t = timer().start()
+		#n = rows.count()
+		n = len(rows)
+		self.log('selector found %d jobs' % n)
+		self.log('t(count) = %.5fs' % t.check())
 
 		result = {}
 		result['plot'] = []
@@ -466,8 +474,28 @@ class starts(crowhandler):
 
 		# aggregate, slice, chop, dice, puree
 
+		# With the number of ops we're performing in application space here
+		# (vs database space) it's actually more efficient to convert this
+		# result set to a list up front, then perform distinction and other
+		# operations in python instead of in mongo.
+
+		def mydistinct(f):
+			series = {}
+			for row in rows:
+				key = f(row)
+				if key in series:
+					series[key] += 1
+				else:
+					series[key] = 1
+			return series
+
 		t = timer().start()
-		series = rows.distinct('latest.' + params.groupby) 
+		#series = rows.distinct('latest.' + params.groupby) 
+		series = mydistinct(lambda x: x['latest'][params.groupby])
+		self.log('t(distinct) %.5fs' % t.check())
+
+		t = timer().start()
+		# set up bins
 		pData = {}
 		totals = {}
 		for p in series:
@@ -476,9 +504,8 @@ class starts(crowhandler):
 			for b in range(params.bins):
 				binstart = startTime + (b * binwidth)
 				pData[p].append([binstart * 1000, 0])
-		self.log('t(distinct) %.5fs' % t.check())
 
-		t = timer().start()
+		# drop jobs into bins
 		keyprop = rel[params.rel][1]
 		for r in rows:
 			group = r['latest'][params.groupby]
@@ -522,7 +549,8 @@ class starts(crowhandler):
 				result['plot'].append(ser)
 
 		t = timer().start()
-		# even if we asked for no caches, we will take advantage and cache this result
+		# even if we asked for no caches on query, we will take advantage of
+		# having current results, and cache this result for the next caller
 		qkey = self.cache(db, params, json.dumps(result), lifetime=cacheduration(interval))
 		self.log('t(cache %s) = %.5fs' % (qkey, t.check()))
 		return result
