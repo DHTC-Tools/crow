@@ -1,0 +1,7 @@
+#!/bin/sh
+
+dir=$(pwd)
+dir=$(dirname "$dir")
+dir=$(dirname "$dir")
+exec 2>&1
+exec "$dir/server/crow-server"

@@ -11,6 +11,9 @@ import string
 import time
 import ConfigParser
 import json
+import inspect
+import functools
+import resource
 
 import pymongo
 import cherrypy
@@ -27,6 +30,33 @@ os.environ['TZ'] = 'UTC'
 time.tzset()
 
 
+class GraphiteAdapter(object):
+	def __init__(self, address, prefix):
+		if hasattr(address, 'lower'):
+			address = (address, 2003)
+		self.address = address
+		self.prefix = prefix
+		self.socket = None
+		self.reopen()
+
+	def reopen(self):
+		if self.socket:
+			self.socket.close()
+		self.socket = socket.socket()
+		self.socket.connect(self.address)
+
+	def close(self):
+		if self.socket:
+			self.socket.close()
+		self.socket = None
+
+	def __setitem__(self, key, value):
+		t = time.time()
+		name = self.prefix + '.' + str(key)
+		value = str(value)
+		self.socket.send('%s %s %d\n' % (name, value, int(t)))
+
+
 class Config(ConfigParser.RawConfigParser):
 	def getlist(self, section, option):
 		return [x.strip() for x in self.get(section, option).split(',')]
@@ -36,9 +66,11 @@ def cacheduration(t):
 	# Cache duration is a stepwise function of request period
 	durations = [
 		# (if req period >, set cache duration to)
-		(0, hour),       # always cache at least 1 hour
-		(2*week, day),   # cache 2-week views for 1 day
-		(6*month, week), # cache 6-month views for 1 week
+		(0, minute),         # cache low values only briefly
+		(2*hour, 10*minute),  # above 2h, cache 10 minutes
+		(day, hour),         # above a day, cache 1 hour
+		(2*week, day),       # cache 2-week views for 1 day
+		(6*month, week),     # cache 6-month views for 1 week
 	]
 
 	duration = 0
@@ -46,6 +78,18 @@ def cacheduration(t):
 		if t > treq:
 			duration = tdur
 	return duration
+
+
+def sanitime(sec):
+	for sane in (minute, 2*minute, 150, 5*minute, 10*minute,
+	             15*minute, 30*minute, hour, 2*hour, 3*hour,
+	             4*hour, 6*hour, 12*hour, day, week, 2*week,
+	             month, 6*month, year):
+		if sec < sane:
+			return sane
+
+	# if still here, use year
+	return year
 
 
 class timer(object):
@@ -63,12 +107,73 @@ class timer(object):
 		self._stop = time.time()
 		return self._stop - self._start
 
+	@classmethod
+	def timed(cls, *args):
+		'''A decorator for functions that should be timed.'''
+		def _(f):
+			if args:
+				label = args[0]
+			else:
+				label = f.__name__
+			@functools.wraps(f)
+			def _(*args, **kwargs):
+				caller = inspect.currentframe(1)
+				caller = caller.f_locals['self']
+				t = cls().start()
+				r = f(*args, **kwargs)
+				caller.log('t(%s) = %.5fs' % (label, t.check()))
+				return r
+			return _
+		return _
 
 class frob(dict):
 	def __getattr__(self, key):
 		return self[key]
 	def __setattr__(self, key, value):
 		self[key] = value
+
+
+class magicbag(dict):
+	def __init__(self, width, domain):
+		self._width = width
+		self._domain = domain
+		self.report()
+
+	@property
+	def nbins(self):
+		return int((self._domain + self._width - 1) / self._width)
+
+	@property
+	def domain(self):
+		return self._domain
+
+	@domain.setter
+	def domain(self, value):
+		self._domain = value
+		self.report()
+
+	@property
+	def width(self):
+		return self._width
+
+	@width.setter
+	def width(self, value):
+		self._width = value
+		self.report()
+
+	def report(self):
+		print "n=%d  d=%d  w=%d" % (self.nbins, self._domain, self.width)
+
+	def prepare(self, keys, start=0):
+		# Init the bins.  Multiply low val by 1000 because Highcharts
+		# takes timestamps in milliseconds, while our data is in seconds.
+		# Each bin value is a 2-tuple of the curre
+		mkbin = lambda i: frob({
+			'low': 1000 * (start + (i * self.width)),
+			'value': 0,
+		})
+		for key in keys:
+			self[key] = [mkbin(i) for i in xrange(self.nbins)]
 
 
 class crowapp(object):
@@ -109,12 +214,30 @@ class crowhandler(object):
 	except ImportError:
 		pdt = None
 
+	@staticmethod
+	def parsebool(s):
+		if hasattr(s, 'lower'):
+			s = s.lower()
+		if s in ('no', 'off', 'false'):
+			return False
+		if s == 0:
+			return False
+		return True
+
 	def __init__(self, app, req, reqno):
 		self.app = app
 		self.request = req
 		self.reqno = reqno
 		self.reqid = self.app.instance + '.' + str(self.reqno)
+		self.curtime = int(time.time())
 		self._usecache = True
+
+		if self.app.mw.graphite:
+			ru = resource.getrusage(resource.RUSAGE_SELF)
+			pgsz = resource.getpagesize()
+			self.app.mw.graphite['requests'] = 1
+			self.app.mw.graphite['memory.maxrss'] = ru.ru_maxrss * pgsz
+			self.app.mw.graphite['memory.unshared'] = ru.ru_idrss * pgsz
 
 	def log(self, msg):
 		print '[%s %.3f] %s' % (self.reqid, time.time(), msg)
@@ -161,7 +284,7 @@ class crowhandler(object):
 		return md5.hexdigest()[:8]
 
 	def usecache(self, req, params):
-		if params['current']:
+		if 'current' in params and params['current'] in (True, 'true'):
 			return False
 		if 'X-Crow-RCache' in req.headers and req.headers['X-Crow-RCache'] == 'no':
 			return False
@@ -251,26 +374,73 @@ class crowhandler(object):
 		select = self._and(*andFilters)
 		return select
 
-	def readparams(self, params):
-		params = frob(params)
+	def readparams(self, template):
+		# We could optimize slightly here by moving this to the caller
+		# and doing it only once per instance of the server.  But hold
+		# out - this is a slim gain.
+		params = frob([(k, v) for k, (v, parser) in template.items()])
+		parsers = frob([(k, parser) for k, (v, parser) in template.items()])
 		req = self.request.json
 		for key in params.keys():
 			if key in req:
-				params[key] = type(params[key])(req[key])
-		return params
+				params[key] = parsers[key](req[key])
+		db = self.app.getDB(params.pool)
+		return db, params
 
-	def tdomain(self, params):
-		ct = int(time.time())
+	def timedomain(self, params):
 		if params.start == 'default' and params.end == 'default':
 			interval = params.hours * 3600
-			startTime = ct - interval
+			startTime = self.curtime - interval
 		elif params.start == 'default':
 			interval = params.hours * 3600
 			startTime = self.tconv(params.end) - interval
 		else:
 			interval = params.hours * 3600
 			startTime = self.tconv(params.start)
-		return ct, startTime, interval
+		self.log('interval = %d + %d (%s++)' % (startTime, interval, time.ctime(startTime)))
+		extra = startTime % interval
+		startTime -= extra
+		interval += extra
+		return startTime, interval
+
+	def cachecheck(self, db, params):
+		usecache = self.usecache(self.request, params)
+		if usecache:
+			# Query logging is for determining what the most in-demand
+			# queries are.  Don't log queries that refuse the cache;
+			# these are most likely cache-loading queries, so would
+			# have artificially inflated scores if logged.  And if such
+			# a query belongs to a live user, they're obvs asking for
+			# an uncached result, so why use this as a caching metric?
+			self.logquery(db, params)
+
+		# cache check
+		if usecache:
+			t = timer().start()
+			qkey, data, reason = self.cached(self.request, db, params)
+			if data:
+				r = json.loads(data)
+				self.log('t(cache check %s %s) = %.5fs' % (qkey, reason, t.check()))
+				return r
+			else:
+				self.log('t(cache check %s %s) = %.5fs' % (qkey, reason, t.check()))
+		else:
+			self.log('no-cache')
+
+		# no cache result
+		return None
+
+	@timer.timed()
+	def query(self, db, select, fetch):
+		#t = timer().start()
+		rows = db.jobs.find(select, fetch)
+		#self.log('t(mongodb) = %.5fs' % t.check())
+		return rows
+
+
+	@timer.timed()
+	def retrieve(self, rows):
+		return list(rows)
 
 
 class current(crowhandler):
@@ -284,16 +454,14 @@ class current(crowhandler):
 	]
 
 	def __call__(self, *args, **kwargs):
-		params = self.readparams({
-			'pool': 'default',
-			'project': 'all',
-			'user': 'all',
-			'task': 'all',
-			'groupby': 'ProjectName',
-			'current': False,		# euphemism: current == True -> no caching please
+		db, params = self.readparams({
+			'pool': ['default', str],
+			'project': ['all', str],
+			'user': ['all', str],
+			'task': ['all', str],
+			'groupby': ['ProjectName', str],
+			'current': [False, self.parsebool],		# euphemism: current == True -> no caching please
 		})
-
-		db = self.app.getDB(params.pool)
 
 		t = timer().start()
 		rows = db.jobs.find(
@@ -343,16 +511,9 @@ class current(crowhandler):
 class starts(crowhandler):
 	exposed = True
 
-	# QDate = 1410041462
-	# JobCurrentStartDate = 1410041468
-	# JobStartDate = 1410041468
-	# LastMatchTime = 1410041468
-	# JobCurrentStartExecutingDate = 1410041470
-	# CompletionDate = 1410041471
-	# EnteredCurrentStatus = 1410041471
-	# JobFinishedHookDone = 1410041471
-	# LastJobLeaseRenewal = 1410041471
-
+	# caching is indexed by the query string, alphasorted by key name. But
+	# some query params should not differentiate one qstring from another --
+	# we want to ignore them for the purpose of generating a cache hash.
 	cacheignores = [
 		# n.b. width doesn't affect queried data, so ignore that in /current queries
 		'width',
@@ -360,158 +521,205 @@ class starts(crowhandler):
 		'current',
 	]
 
+
+	# The following three lambdas are all we need to evaluate correct
+	# bins for any facet of a job's lifecycle.  The three lambdas conform
+	# to a common interface, even though they don't all use the same
+	# inputs.
+	# 
+	# A note on methodology.  The naive approach to binning is to iterate
+	# across the full list of bins, checking whether there is any overlap
+	# of a job's lifespan with the timespan of that bin.  That requires
+	# from four to six compare operations per bin, so easily upward of 500
+	# compares for each job in a query result.  THIS IS SLOW, and our
+	# first implementation proved it - simple result sets sometimes took
+	# several minutes to evaluate.
+	# 
+	# Instead, we note that bin matches are not randomly distributed; they
+	# are always contiguous blocks.  We exploit this to find the range of
+	# bins in a set that match the inputs.  We can do this in six compare
+	# operations per job, and then simply increment bin counters for the
+	# selected bins, so we don't even iterate across all bins either.
+	# Evaluation complexity decreases by a factor of around 100; wall time
+	# decreases by an order of magnitude.
+
+
+	# Determine which bins indices (for a bin set defined by start
+	# and width) intersect a time range given by (stime, etime).
+	#
+	# This decides during which bins' periods a job was running.
+	_running = lambda stime, etime, start, width: \
+	                  (int((stime - start) / width),
+		               int((etime - start) / width))
+
+	# Determine which bin's index (for a bin set defined by start
+	# and width) contains a time point given by stime.  etime
+	# is ignored; the result range can include only one bin.
+	#
+	# This decides during which bin's period a job started.
+	_started = lambda stime, etime, start, width: \
+	                  (int((stime - start) / width),
+		               int((stime - start) / width))
+
+	# Determine which bin's index (for a bin set defined by start
+	# and width) contains a time point given by etime.  stime
+	# is ignored; the result range can include only one bin.
+	#
+	# This decides during which bin's period a job completed.
+	_finished = lambda stime, etime, start, width: \
+	                   (int((etime - start) / width),
+		                int((etime - start) / width))
+
+	# Map each job relation  (is running during, did start during, etc.)
+	# to one of the intersection lambdas above.  Pair the lambda with
+	# the Condor classad that determines membership.
+	rel = {
+		'default': (_running, 'JobStartDate'),
+		'running': (_running, 'JobStartDate'),
+		'started': (_started, 'JobStartDate'),
+		'finished': (_finished, 'JobStartDate'),
+		'submitted': (_started, 'QDate'),
+	}
+
 	def __call__(self, *args, **kwargs):
 		self.log('initial postdata: %s' % self.request.json)
 
-		params = self.readparams({
-			'pool': 'default',
-			'project': 'all',
-			'user': 'all',
-			'task': 'all',
-			'groupby': 'ProjectName',
-			'rel': 'running',
-			'start': 'default',
-			'end': 'default',
-			'hours': 0,
-			'bins': 0,
-			'current': False,		# euphemism: current == True -> no caching please
+		# XXX consider putting db and params into self
+
+		db, params = self.readparams({
+			'pool': ['default', str],
+			'project': ['all', str],
+			'user': ['all', str],
+			'task': ['all', str],
+			'groupby': ['ProjectName', str],
+			'rel': ['running', str],
+			'start': ['default', str],
+			'end': ['default', str],
+			'hours': [0, int],
+			#'bins': [0, int],
+			'binwidth': [0, int],
+			'current': ['false', self.parsebool],		# euphemism: current == True -> no caching please
 		})
 
-		db = self.app.getDB(params.pool)
+		startTime, interval = self.timedomain(params)
 
-		ct, startTime, interval = self.tdomain(params)
-		self.log('interval = %d + %d (%s++)' % (startTime, interval, time.ctime(startTime)))
+		# sanitize binwidth
+		params.binwidth = sanitime(params.binwidth);
 
-		if not params.bins:
-			params.bins = params.hours
-		binwidth = interval / params.bins
+		# init binning device
+		bins = magicbag(params.binwidth, interval)
 
-		if startTime % 3600:
-			# if not an exact hour boundary, do one extra bin
-			params.bins += 1
-			startTime -= (startTime % 3600)
-
-		usecache = self.usecache(self.request, params)
-		if usecache:
-			self.logquery(db, params)
-
-		# cache check
-		if usecache:
-			t = timer().start()
-			qkey, data, reason = self.cached(self.request, db, params)
-			if data:
-				r = json.loads(data)
-				self.log('t(cache check %s %s) = %.5fs' % (qkey, reason, t.check()))
-				return r
-			else:
-				self.log('t(cache check %s %s) = %.5fs' % (qkey, reason, t.check()))
-		else:
-			self.log('no-cache')
+		# if cached and cached results are wanted, return those
+		results = self.cachecheck(db, params)
+		if results:
+			return results
 
 		# need to tune the db selection based on $rel
 		select = self.standardfilter(params, startTime, interval)
+		rows = self.query(db, select, {
+			'latest.QDate': 1,
+			'latest.JobStatus': 1,
+			'latest.ProjectName': 1,
+			'latest.JobStartDate': 1,
+			'latest.CompletionDate': 1,
+			'latest.User': 1,
+			'latest.ClusterId': 1,
+			'latest.Owner': 1,
+		})
 
-		t = timer().start()
-		rows = db.jobs.find(
-			select,
-			{
-				'latest.QDate': 1,
-				'latest.JobStatus': 1,
-				'latest.ProjectName': 1,
-				'latest.JobStartDate': 1,
-				'latest.CompletionDate': 1,
-				'latest.User': 1,
-				'latest.ClusterId': 1,
-				'latest.Owner': 1,
-			})
-		self.log('t(mongodb) = %.5fs' % t.check())
-		self.log('selector found %d jobs' % rows.count())
 
-		result = {}
-		result['plot'] = []
+		# With the number of ops we're performing in application space here
+		# (vs database space) it's actually more efficient to convert this
+		# result set to a list up front, then perform distinction and other
+		# operations in python instead of in mongo.  So first, retrieve all
+		# rows and make into a list.
+		rows = self.retrieve(rows)
+		self.log('selector found %d jobs' % len(rows))
 
-		_running = lambda stime, etime: \
-		                  (int((stime - startTime) / binwidth),
-			               int((etime - startTime) / binwidth))
 
-		_started = lambda stime, etime: \
-		                  (int((stime - startTime) / binwidth),
-			               int((stime - startTime) / binwidth))
+		# This function performs value distinction across the result
+		# set.  We could have asked Mongo to do it, but this is faster
+		# once we've retrieved all the results into a native list.
+		# OLD CODE: groups = rows.distinct('latest.' + params.groupby) 
+		@timer.timed('distinct')
+		def mydistinct(f):
+			groups = {}
+			for row in rows:
+				key = f(row)
+				if key in groups:
+					groups[key] += 1
+				else:
+					groups[key] = 1
+			return groups
 
-		_finished = lambda stime, etime: \
-		                   (int((etime - startTime) / binwidth),
-			                int((etime - startTime) / binwidth))
+		# Groups is a mapping of distinct values of params.groupby
+		# (i.e. job owner or projectname) to the number of jobs
+		# bearing that value.
+		groups = mydistinct(lambda x: x['latest'][params.groupby])
 
-		rel = {
-			'default': (_running, 'JobStartDate'),
-			'running': (_running, 'JobStartDate'),
-			'started': (_started, 'JobStartDate'),
-			'finished': (_finished, 'JobStartDate'),
-			'submitted': (_started, 'QDate'),
+
+		# Magicbag is our collation device.  It's a dict in which
+		# each key maps to an array of bins.  Each bin will correspond
+		# to a data point in our graphical plot.
+		# 
+		# Bins denote a span of a continuous domain, e.g. of time
+		# (but not necessarily), so each bin has a low value and
+		# a high value and a width.  The width of each bin is given
+		# by magicbag.width, so we only need to track low value
+		# for each bin -- the high value can be derived.  These
+		# are initialized when you call magicbag.prepare().  The low
+		# value of bin 0's domain is given by the 'start' kwarg;
+		# if not present, it is set to 0.  Each bin's initial
+		# value is also set to 0.
+		bins.prepare(groups.keys(), start=startTime)
+
+		# Drop jobs into bins according to our search relation
+		# and their time attributes.
+		self.bin(bins, params, rows, startTime)
+
+		result = {
+			'plot': [],
 		}
-
-		# aggregate, slice, chop, dice, puree
-
-		t = timer().start()
-		series = rows.distinct('latest.' + params.groupby) 
-		pData = {}
-		totals = {}
-		for p in series:
-			pData[p] = []
-			totals[p] = 0
-			for b in range(params.bins):
-				binstart = startTime + (b * binwidth)
-				pData[p].append([binstart * 1000, 0])
-		self.log('t(distinct) %.5fs' % t.check())
+		for p in bins.keys():
+			print '>>', len(bins[p])
+			series = {
+				'name': p + ' (' + str(groups[p]) + ')',
+				'data': [(v.low, v.value) for v in bins[p]],
+			}
+			result['plot'].append(series)
 
 		t = timer().start()
-		keyprop = rel[params.rel][1]
+		# even if we asked for no caches on query, we will take advantage of
+		# having current results, and cache this result for the next caller
+		qkey = self.cache(db, params, json.dumps(result), lifetime=cacheduration(interval))
+		self.log('t(cache %s) = %.5fs' % (qkey, t.check()))
+		return result
+
+
+	@timer.timed('binning')
+	def bin(self, bins, params, rows, start):
+		keyprop = self.rel[params.rel][1]
 		for r in rows:
+			# each r is a job record
 			group = r['latest'][params.groupby]
 			if keyprop in r['latest']:
 				stime = r['latest'][keyprop]
 			else:
-				stime = ct+1
+				stime = self.curtime + 1
 			if 'CompletionDate' in r['latest']:
 				etime = r['latest']['CompletionDate']
 			else:
-				etime = ct
-			first, last = rel[params.rel][0](stime, etime)
+				etime = self.curtime
+			first, last = self.rel[params.rel][0](stime, etime, start, bins.width)
 			if first < 0:
 				first = 0
-			if last > params.bins:
-				last = params.bins
-			#if first > last:
-			#	print 'anomalous', r['_id']
+			if last > bins.nbins:
+				last = bins.nbins
 			for b in range(first, last+1):
 				try:
-					pData[group][b][1] += 1
-					totals[group] += 1
+					bins[group][b].value += 1
 				except IndexError:
 					pass
-		self.log('t(binning) = %.5fs' % t.check())
-
-		# not sure why yet but some of these groups come up with zero counts.
-		# (this happens when the select finds jobs that binning excludes.)
-		for group in list(pData.keys()):
-			#total = sum([pData[group][x][1] for x in range(len(pData[group]))])
-			#if total == 0:
-			#	del pData[group]
-			if totals[group] == 0:
-				del pData[group]
-
-		for p in series:
-			if p in pData:
-				ser = {}
-				ser['name'] = p + ' (' + str(totals[p]) + ')'
-				ser['data'] = pData[p]
-				result['plot'].append(ser)
-
-		t = timer().start()
-		# even if we asked for no caches, we will take advantage and cache this result
-		qkey = self.cache(db, params, json.dumps(result), lifetime=cacheduration(interval))
-		self.log('t(cache %s) = %.5fs' % (qkey, t.check()))
-		return result
 
 
 class distincts(crowhandler):
@@ -553,6 +761,24 @@ class crowmw(object):
 		self.config = config
 		self.starts = crowapp(self, starts)
 		self.current = crowapp(self, current)
+		self.graphite = None
+
+		if config.has_section('graphite'):
+			if config.has_option('graphite', 'address'):
+		 		addr = config.get('graphite', 'address')
+		 		addr = config.get('graphite', 'address')
+				if ':' in addr:
+					addr = addr.split(':', 1)
+			else:
+				addr = None
+
+			if config.has_option('graphite', 'prefix'):
+				prefix = config.get('graphite', 'prefix')
+			else:
+				prefix = 'crow.server'
+
+			if addr and prefix:
+				self.graphite = GraphiteAdapter(addr, prefix)
 
 
 if __name__ == '__main__':	  
