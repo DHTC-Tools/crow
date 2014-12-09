@@ -608,19 +608,6 @@ class starts(crowhandler):
 
 		# init binning device
 		bins = magicbag(params.binwidth, interval)
-		#if params.bins:
-		#	bins = magicbag(params.bins, domain=interval)
-		#else:
-		#	bins = magicbag(params.hours)
-
-		# if not an exact bin boundary, do one extra (partial) bin
-		# XXX still need to accomodate extra bin
-		if 0 and startTime % bins.width:
-			# screwball alert - we're slipping an extra bin in here
-			# without going through the setter, so that bins.width
-			# does not get upset by all that fancy property business.
-			bins._nbins += 1
-			startTime -= (startTime % bins.width)
 
 		# if cached and cached results are wanted, return those
 		results = self.cachecheck(db, params)
