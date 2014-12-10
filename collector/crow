@@ -284,29 +284,33 @@ class CollectorWatcher(Watcher):
 		self.reconnect()
 
 
+	def query(self):
+		# Two things.
+		# A. Collectors can give results from ANY_AD queries that
+		#    are not available from any other adtype query. They're
+		#    mysterious denizens of the condor ether.
+		# 2. We should collect all the other adtypes also, and do
+		#    something clever with them in the database.  It would
+		#    allow charting metrics across time, deltas among different
+		#    schedulers, etc.
+
+		# Right now we're only getting jobs (AdTypes.Startd)
+		return self.source.query(htcondor.AdTypes.Startd)
+
+
 	def watch(self, jobactions):
 		self.hookctx = frob()
 		while True:
 			self.hookctx.count = 0
 
-			# Two things.
-			# A. Collectors can give results from ANY_AD queries that
-			#    are not available from any other adtype query. They're
-			#    mysterious denizens of the condor ether.
-			# 2. We should collect all the other adtypes also, and do
-			#    something clever with them in the database.  It would
-			#    allow charting metrics across time, deltas among different
-			#    schedulers, etc.
-
 			try:
-				# Right now we're only getting jobs (AdTypes.Startd)
-				jobs = self.source.query(htcondor.AdTypes.Startd)
+				jobs = self.query()
 			except Exception, e:
 				self.log('crow %s %s: %s (reconnecting)', self.eventtype, time.strftime('%Y%m%dT%H%M%S'), str(e))
 				self.reconnect()
 				continue
 
-			jobactions.begin(jobs)
+			jobactions.begin(self, jobs)
 
 			if self.hooks['begin'](self, jobs) is False:
 				break
@@ -314,11 +318,11 @@ class CollectorWatcher(Watcher):
 				try:
 					job = self.stringify(job)
 					self.hookctx.count += 1
-					job = jobactions(job)
+					job = jobactions(self, job)
 				except Exception, e:
 					self.log(str(e))
 
-			jobactions.end(jobs)
+			jobactions.end(self, jobs)
 
 			if self.interval is None:
 				break
@@ -364,6 +368,10 @@ class QueueWatcher(CollectorWatcher):
 
 		self.reconnect = reconnect
 		self.reconnect()
+
+	def query(self):
+		# Right now we're only getting jobs (AdTypes.Startd)
+		return self.source.query()
 
 
 class HistoryWatcher(Watcher):
@@ -456,7 +464,7 @@ class HistoryWatcher(Watcher):
 					time.sleep(float(self.interval))
 					continue
 
-			jobactions.begin([])
+			jobactions.begin(self, [])
 
 			# Ready to read current file
 			if self._fp:
@@ -464,14 +472,14 @@ class HistoryWatcher(Watcher):
 					break
 				for job in self.read():
 					self.hookctx.count += 1
-					job = jobactions(job)
+					job = jobactions(self, job)
 
-			jobactions.end([])
+			jobactions.end(self, [])
 
 			if self._fp and self.hooks['end'](self, None) is False:
 				break
 
-			if self.interval is None:
+			if not self.interval:
 				self._fp.close()
 				break
 
@@ -841,20 +849,20 @@ class JobAction(list):
 	the same job.  It may alter the job in transit; such actions are
 	job filters.
 	'''
-	def __call__(self, job):
+	def __call__(self, watcher, job):
 		for action in self:
-			job = action(job) or job
+			job = action(watcher, job) or job
 		return job
 
-	def begin(self, jobs):
+	def begin(self, watcher, jobs):
 		'''Prep work before starting a round of job updates.'''
 		for action in self:
-			action.begin(jobs)
+			action.begin(watcher, jobs)
 
-	def end(self, jobs):
+	def end(self, watcher, jobs):
 		'''Final work after ending a round of job updates.'''
 		for action in self:
-			action.end(jobs)
+			action.end(watcher, jobs)
 
 
 class DBUpdater(JobAction):
@@ -864,7 +872,7 @@ class DBUpdater(JobAction):
 		self.db = db
 		self.fromhistory = fromhistory	# is this job record from history?
 
-	def __call__(self, job):
+	def __call__(self, watcher, job):
 		# XXX This can be better optimized wrt lifecycle mgt.
 		# First we update, which sets lifecycle.*, then we set
 		# lifecycle.unobserved differently. That's two updates
@@ -874,7 +882,7 @@ class DBUpdater(JobAction):
 			self.db.unsee(job)
 		return job
 
-	def begin(self, jobs):
+	def begin(self, watcher, jobs):
 		if jobs:
 			# find all jobs that are allegedly in queue (unobserved == 0)
 			alleged = self.db.inqueue()
@@ -882,6 +890,9 @@ class DBUpdater(JobAction):
 			# find jobs that are actually in queue and index them
 			actual = {}
 			for job in jobs:
+				if 'GlobalJobId' not in job:
+					print '>> no jobid:', job['Name']
+					continue
 				actual[job['GlobalJobId']] = job
 
 			# remove from alleged set all the jobs that were actually found
@@ -890,12 +901,13 @@ class DBUpdater(JobAction):
 			# 'unsee' all the wrong allegations
 			for job in wrong:
 				jobid = job['GlobalJobId']
-				print 'unseeing', jobid
+				watcher.log('- unseeing %s', jobid)
 				self.db.unsee(job)
+
 
 class NullAction(JobAction):
 	'''A job action that does nothing to the job; a placeholder.'''
-	def __call__(self, job):
+	def __call__(self, watcher, job):
 		return job
 
 
@@ -906,7 +918,7 @@ class AdFilter(JobAction):
 	def __init__(self, rule):
 		self.matcher = Matcher(rule.split(' '))
 
-	def __call__(self, job):
+	def __call__(self, watcher, job):
 		new = {}
 		for key in self.matcher(job.keys()):
 			new[key] = job[key]
@@ -978,7 +990,7 @@ class EnsureFilter(JobAction):
 		       self.asbool(value) or \
 		       self.asstr(value)
 
-	def __call__(self, job):
+	def __call__(self, watcher, job):
 		'''Apply an ensures set.'''
 		keys = [k.lower() for k in job.keys()]
 		for key, value in self.ensures.items():
@@ -1032,7 +1044,8 @@ class main(object):
 		# Read .ini file from relative to $0
 		base = os.path.basename(sys.argv[0])
 		home = os.path.dirname(sys.argv[0])
-		if os.path.split(home)[-1] == 'bin':
+		if os.path.split(home)[-1] == 'bin' or \
+		   os.path.split(home)[-1] == 'collector':
 			home = os.path.join(*os.path.split(home)[:-1])
 
 		file = base + '.ini'
