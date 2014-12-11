@@ -1,0 +1,13 @@
+#!/bin/sh
+
+dir=$(pwd)
+dir=$(dirname "$dir")
+dir=$(dirname "$dir")
+
+(
+	mkdir -p /var/log/crow
+	chmod 1777 /var/log/crow
+) >/dev/null 2>&1
+
+exec 2>&1
+exec /command/setuidgid nobody "$dir/crow/crow" master
