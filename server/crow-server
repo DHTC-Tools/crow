@@ -14,9 +14,15 @@ import json
 import inspect
 import functools
 import resource
+import signal
 
 import pymongo
 import cherrypy
+
+try:
+	import dowser
+except ImportError:
+	dowser = None
 
 minute = 60
 hour = 60 * minute
@@ -31,10 +37,11 @@ time.tzset()
 
 
 class GraphiteAdapter(object):
-	def __init__(self, address, prefix):
+	def __init__(self, address, prefix, proto='tcp'):
 		if hasattr(address, 'lower'):
 			address = (address, 2003)
 		self.address = address
+		self.proto = proto
 		self.prefix = prefix
 		self.socket = None
 		self.reopen()
@@ -42,7 +49,10 @@ class GraphiteAdapter(object):
 	def reopen(self):
 		if self.socket:
 			self.socket.close()
-		self.socket = socket.socket()
+		if self.proto == 'tcp':
+			self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		elif self.proto == 'udp':
+			self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 		self.socket.connect(self.address)
 
 	def close(self):
@@ -77,6 +87,10 @@ def cacheduration(t):
 	for treq, tdur in durations:
 		if t > treq:
 			duration = tdur
+
+	# temporary? short-lived items cache short times, long last longer
+	if duration > 2*minute:
+		duration = day
 	return duration
 
 
@@ -232,12 +246,7 @@ class crowhandler(object):
 		self.curtime = int(time.time())
 		self._usecache = True
 
-		if self.app.mw.graphite:
-			ru = resource.getrusage(resource.RUSAGE_SELF)
-			pgsz = resource.getpagesize()
-			self.app.mw.graphite['requests'] = 1
-			self.app.mw.graphite['memory.maxrss'] = ru.ru_maxrss * pgsz
-			self.app.mw.graphite['memory.unshared'] = ru.ru_idrss * pgsz
+		self.app.mw.status()
 
 	def log(self, msg):
 		print '[%s %.3f] %s' % (self.reqid, time.time(), msg)
@@ -681,7 +690,6 @@ class starts(crowhandler):
 			'plot': [],
 		}
 		for p in bins.keys():
-			print '>>', len(bins[p])
 			series = {
 				'name': p + ' (' + str(groups[p]) + ')',
 				'data': [(v.low, v.value) for v in bins[p]],
@@ -778,10 +786,40 @@ class crowmw(object):
 				prefix = 'crow.server'
 
 			if addr and prefix:
-				self.graphite = GraphiteAdapter(addr, prefix)
+				self.graphite = GraphiteAdapter(addr, prefix, proto='udp')
+
+	def memory(self):
+		ru = resource.getrusage(resource.RUSAGE_SELF)
+		# multiplier seems to vary platform to platform; result
+		# -should- be in pages but is not always. Linux is KB,
+		# MacOS is bytes.
+		# So at some point we need to case-switch the platform here.
+		# 
+		# Also, the psutils module may be
+		# a good cross-platform solution.
+		#
+		multiplier = 1024	# linux
+		#multiplier = resource.getpagesize()
+		return (ru.ru_maxrss * multiplier, ru.ru_idrss * multiplier)
+
+	def status(self):
+		maxrss, idrss = self.memory()
+		if self.graphite:
+			self.graphite['requests'] = 1
+			self.graphite['memory.maxrss'] = maxrss
+			self.graphite['memory.unshared'] = idrss
+
+		# server.memorylimit gives upper boundary on memory utilization
+		limit = 8192
+		if self.config.has_section('server') and \
+		   self.config.has_option('server', 'memorylimit'):
+			limit = self.config.getint('server', 'memorylimit')
+		if maxrss / (1024 * 1024) > limit:
+			print 'memory limit breached (%d)' % limit
+			sys.exit(255)
 
 
-if __name__ == '__main__':	  
+def main(args):
 	# cherrypy.tools.CORS = cherrypy.Tool('before_finalize', CORS)
 
 	cfg = Config()
@@ -807,5 +845,12 @@ if __name__ == '__main__':
 		#print 'Trying %s ...' % file
 		cfg.read(file)
 
+	mw = crowmw(cfg)
 	cherrypy.config.update({'tools.log_headers.on': False})
-	cherrypy.quickstart(crowmw(cfg), '/', '/web/crow/server/crow-server.conf')
+	if dowser:
+		cherrypy.tree.mount(dowser.Root(), '/dowser')
+	cherrypy.quickstart(mw, '/', '/web/crow/server/crow-server.conf')
+
+
+if __name__ == '__main__':	  
+	sys.exit(main(sys.argv[1:]))
