@@ -87,6 +87,10 @@ def cacheduration(t):
 	for treq, tdur in durations:
 		if t > treq:
 			duration = tdur
+
+	# temporary? short-lived items cache short times, long last longer
+	if duration > 2*minute:
+		duration = day
 	return duration
 
 
