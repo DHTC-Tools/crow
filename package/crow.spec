@@ -43,14 +43,13 @@ mkdir -p %{buildroot}%{_defaultdocdir}/%{name}-%{version}
 mkdir -p %{buildroot}/var/lib/crow
 (
 	cd "$OLDPWD"
-	cp -p bin/crow %{buildroot}%{_bindir}/
-	cp -p bin/qcrow %{buildroot}%{_bindir}/
+	cp -pr LICENSE README.md collector html server service %{buildroot}/var/lib/crow
+	ln -s /var/lib/crow/collector/crow %{buildroot}%{_bindir}/crow
+	ln -s /var/lib/crow/collector/qcrow %{buildroot}%{_bindir}/qcrow
 	cp -p README.md LICENSE %{buildroot}%{_defaultdocdir}/%{name}-%{version}
-	cp -p etc/sysconfig %{buildroot}%{_sysconfdir}/sysconfig/crow
 	cp -p etc/crow.ini.example %{buildroot}%{_sysconfdir}/crow.ini
 	cp -p etc/crow.ini.example %{buildroot}%{_sysconfdir}/crow.ini.example
 	cp -p etc/init.d/* %{buildroot}%{_sysconfdir}/init.d/
-	cp -pr server html %{buildroot}/var/lib/crow
 )
 
 %clean
@@ -67,8 +66,7 @@ rm -rf %{buildroot}
 %{_sysconfdir}/crow.ini.example
 %{_sysconfdir}/init.d/crow-collector
 %{_sysconfdir}/init.d/crow-server
-/var/lib/crow/html/
-/var/lib/crow/server/
+/var/lib/crow/
 
 # insanity
 %changelog

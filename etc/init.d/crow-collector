@@ -10,7 +10,7 @@ exec="/usr/bin/crow"
 prog="crow"
 lockdir=/var/lock/subsys
 
-BRAND=generic
+BRAND=
 
 [ -e /etc/sysconfig/$prog ] && . /etc/sysconfig/$prog
 
@@ -21,7 +21,11 @@ start () {
 	[ -f $config ] || exit 6 
 	[ -h $pidfile ] && { echo >&2 "pidfile $pidfile exists - not starting"; exit 7; }
 
-	daemon $prog -b ${BRAND} master
+	if [ -n "$BRAND" ]; then
+		daemon $prog -b ${BRAND} master
+	else
+		daemon $prog master
+	fi
 }
 
 stop () {
