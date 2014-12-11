@@ -10,4 +10,4 @@ dir=$(dirname "$dir")
 ) >/dev/null 2>&1
 
 exec 2>&1
-exec /command/setuidgid nobody "$dir/crow/crow" master
+exec /command/setuidgid nobody "$dir/collector/crow" queue
