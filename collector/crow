@@ -95,6 +95,36 @@ JobStates = (
 )
 
 
+class GraphiteAdapter(object):
+	def __init__(self, address, prefix, proto='tcp'):
+		if hasattr(address, 'lower'):
+			address = (address, 2003)
+		self.address = address
+		self.proto = proto
+		self.prefix = prefix
+		self.socket = None
+		self.reopen()
+
+	def reopen(self):
+		if self.socket:
+			self.socket.close()
+		if self.proto == 'tcp':
+			self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		elif self.proto == 'udp':
+			self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+		self.socket.connect(self.address)
+
+	def close(self):
+		if self.socket:
+			self.socket.close()
+		self.socket = None
+
+	def __setitem__(self, key, value):
+		t = time.time()
+		name = self.prefix + '.' + str(key)
+		value = str(value)
+		self.socket.send('%s %s %d\n' % (name, value, int(t)))
+
 
 class Config(ConfigParser.RawConfigParser):
 	def getlist(self, section, option):
