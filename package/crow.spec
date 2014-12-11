@@ -47,6 +47,7 @@ mkdir -p %{buildroot}/var/lib/crow
 	ln -s /var/lib/crow/collector/crow %{buildroot}%{_bindir}/crow
 	ln -s /var/lib/crow/collector/qcrow %{buildroot}%{_bindir}/qcrow
 	cp -p README.md LICENSE %{buildroot}%{_defaultdocdir}/%{name}-%{version}
+	cp -p etc/sysconfig %{buildroot}%{_sysconfdir}/sysconfig/crow
 	cp -p etc/crow.ini.example %{buildroot}%{_sysconfdir}/crow.ini
 	cp -p etc/crow.ini.example %{buildroot}%{_sysconfdir}/crow.ini.example
 	cp -p etc/init.d/* %{buildroot}%{_sysconfdir}/init.d/
