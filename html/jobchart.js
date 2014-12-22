@@ -14,6 +14,8 @@ var params = {
 	rel: ['default', String],
 	start: ['default', String],
 	end: ['default', String],
+	nocontrol: ['false', bool],
+	current: ['false', bool],
 };
 
 var groupings = {
@@ -21,32 +23,129 @@ var groupings = {
 	'user': 'Owner',
 };
 
-for (var key in params) {
-	if (key in query) {
-		params[key] = params[key][1](query[key]);
+// calculate base URL from current page
+var baseURL = window.location.href;
+var off = baseURL.indexOf('?');
+if (off > -1)
+	baseURL = baseURL.substr(0, off);
+
+var controlparams = {
+	pool: ['osg', 'atlas', 'duke', 'uchicago'], // 'cms', 'umich'],
+	groupby: ['user', 'project'],
+	rel: ['running', 'submitted', 'started', 'finished'],
+	//width: null,
+	//height: null,
+	start: null,
+	//end: null,
+	hours: [1, 2, 4, 8, 16, 24, 48, 72, 168, 720, 8760],
+	//minbin: null,
+};
+
+function bool(v) {
+	if (v == 'true')
+		return true;
+	if (v == 'on')
+		return true;
+	if (v == 'yes')
+		return true;
+	if (parseInt(v) == 1)
+		return true;
+	return false;
+}
+
+function initcontrols() {
+	for (var key in controlparams) {
+		var node = $('#' + key);
+		if (controlparams[key] === parseInt(controlparams[key])) {
+			node.val(controlparams[key]);
+		}
+		else if (controlparams[key] === String(controlparams[key])) {
+			node.val(controlparams[key]);
+		}
+		else if (controlparams[key] === null) {
+			node.val('');
+		}
+		else if ('length' in controlparams[key]) {
+			for (var i in controlparams[key]) {
+				var value = controlparams[key][i];
+				var option = $('<option>')
+					.attr('value', value)
+					.text(value);
+				node.append(option);
+			}
+			if (controlparams[key].indexOf(params[key]) > -1)
+				node.val(params[key]);  /* select option if option is valid */
+		}
+		node.keyup(update);
+		node.change(update);
 	}
-	else {
-		params[key] = params[key][0];
+	$('#moreopts').change(update);
+	$('#nocache').change(update);
+	update();
+}
+
+function getvalue(key) {
+	return $('#' + key).val();
+}
+
+var gotoURL = '';
+function update() {
+	var url = baseURL + '?';
+	for (var key in controlparams) {
+		var val = getvalue(key);
+		if (val === null)
+			1;
+		else if (val == "")
+			1;
+		else
+			url += '&' + key + '=' + encodeURI(getvalue(key));
 	}
+
+	if ($('#moreopts').prop('checked'))
+		$('#controls .optional').show();
+	else
+		$('#controls .optional').hide();
+
+	if ($('#nocache').prop('checked'))
+		url += '&current=true';
+
+	url = url.replace('?&', '?');
+	gotoURL = url;
+}
+
+function reload () {
+	window.location.href = gotoURL;
+}
+
+function toggleopts () {
 }
 
 function load() {
+	/* Set local timezone for data */
+	var date = new Date();
+	Highcharts.setOptions({
+		global: {
+			useUTC: false,
+			timezoneOffset: date.getTimezoneOffset(),
+		}
+	});
+
 	$('#crowgraph').css({width: params.width, height: params.height});
 
 	/* Start with one bin per hour */
 	bins = params.hours;
-	millis = 3600 * 1000;
+	binwidth = 3600;
 
 	/* Bin width is chartwidth/bins.  If this is too small, then make fewer bins */
 	while (params.width / bins < params.minbin) {
 		bins /= 2;
-		millis *= 2;
+		binwidth *= 2;
 	}
 
 	/* Similarly, if binwidth is too small, then make more */
 	while (params.width / bins > params.maxbin) {
 		bins *= 2;
-		millis /= 2;
+		binwidth /= 2;
 	}
 
 	yLabels = {
@@ -70,18 +169,18 @@ function load() {
 					stacking: 'normal',
 					pointPadding: 0.0,
 					groupPadding: 0,
-					pointInterval: millis,	/* how many millis per data point/bin */
+					pointInterval: binwidth * 1000,	/* how many millis per data point/bin */
 				}
 			},
 			title: { text: '' },
-			xAxis: { type: 'datetime', tickWidth: 0, gridLineWidth: 1, title: { text: 'Date/Time (all times UTC)' } },
+			xAxis: { type: 'datetime', tickWidth: 0, gridLineWidth: 1, title: { text: 'Date/Time (local to you)' } },
 			yAxis: { title: { text: yLabels[params.rel] } },
 			legend: { align: 'left', verticalAlign: 'top', y: 10, floating: true, borderWidth: 0 },
 			//exporting: {	   buttons: { contextButton: {	text: 'Export' } }, sourceHeight:1050, sourceWidth: 1485	},
 			credits: { enabled: false },
 			tooltip: { formatter: function() {
 				return ('<b>' + this.series.name + '</b><br/>' +
-					Highcharts.dateFormat('%a %d %b %Y, %H:%M', this.x) + ' UTC<br/>' +
+					Highcharts.dateFormat('%a %d %b %Y, %H:%M', this.x) + '<br/>' +
 					'Jobs: ' + this.y)
 			} }
 	}; 
@@ -103,11 +202,13 @@ function load() {
 			"hours": params.hours,
 			"pool": params.pool,
 			"groupby": groupings[params.groupby],
-			"bins": bins,
+			//"bins": bins,
+			"binwidth": binwidth,
 			"width": params.width,
 			"rel": params.rel,
 			"start": params.start,
 			"end": params.end,
+			"current": params.current,
 		}),
 		contentType: "application/json; charset=utf-8",
 		dataType: "json",
@@ -115,7 +216,9 @@ function load() {
 			clearTimeout(failtimer);
 			$('#crowgraph').show();
 			options.series = data.plot;
+			try {
 			chart = new Highcharts.Chart(options); 
+			} catch(e) { console.log(e); }
 			$('#flying').remove();
 		},
 		failure: function(errMsg) {
@@ -126,6 +229,29 @@ function load() {
 }
 
 $(document).ready(function () {
+	for (var key in params) {
+		if (key in query) {
+			params[key] = params[key][1](query[key]);
+		}
+		else {
+			params[key] = params[key][0];
+		}
+	}
+
+	/* Hide the controls? */
+	if (params['nocontrol'] == true) {
+		$('#controls').hide();
+	}
+	else {
+		params['height'] -= $('#controls').height();
+	}
+	$('#controls .optional').hide();
+
+	initcontrols();
+	$('#flying').hide();
+	load();
+});
+
 	// delay the crow animation by 2s in case response is quick
 	setTimeout(function () {
 		//$('#crowgraph').hide();
@@ -150,7 +276,3 @@ $(document).ready(function () {
 		name.css('font-size', '' + sz + '%');
 
 	}, 2000);
-
-	$('#flying').hide();
-	load();
-});
