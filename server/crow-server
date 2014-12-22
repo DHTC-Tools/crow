@@ -76,7 +76,7 @@ def cacheduration(t):
 	# Cache duration is a stepwise function of request period
 	durations = [
 		# (if req period >, set cache duration to)
-		(0, minute),         # cache low values only briefly
+		(0, 2*minute),         # cache low values only briefly
 		(2*hour, 10*minute),  # above 2h, cache 10 minutes
 		(day, hour),         # above a day, cache 1 hour
 		(2*week, day),       # cache 2-week views for 1 day
@@ -190,6 +190,24 @@ class magicbag(dict):
 			self[key] = [mkbin(i) for i in xrange(self.nbins)]
 
 
+class dbmgr(object):
+	def __init__(self, dbserver):
+		self.dbserver = dbserver
+
+	def conn(self, pool):
+		# it doesn't matter what we do internally here, so long
+		# as we return a mongoclient db instance and provide a
+		# close() method on it.
+		client = pymongo.MongoClient(self.dbserver)
+		if not pool.startswith('crow_'):
+			pool = 'crow_' + pool
+		if not hasattr(client, pool):
+			return None
+		db = getattr(client, pool)
+		db.close = client.close
+		return db
+		
+
 class crowapp(object):
 	exposed = True
 
@@ -202,21 +220,18 @@ class crowapp(object):
 		self.reqno = 0
 		self.dbserver, _ = self.mw.config.getlist('db', 'default')
 		self.client = pymongo.MongoClient(self.dbserver)
+		self.dbmgr = dbmgr(self.dbserver)
 
 	@cherrypy.tools.accept(media='application/json')
 	@cherrypy.tools.json_out()
 	@cherrypy.tools.json_in()
 	def POST(self, *args, **kwargs):
 		self.reqno += 1
+		# XXX ugh
+		if self.reqno > 50000:
+			os.kill(os.getpid(), signal.SIGTERM)
 		handler = self.handler(self, cherrypy.request, self.reqno)
 		return handler(*args, **kwargs)
-
-	def getDB(self, pool):
-		if not pool.startswith('crow_'):
-			pool = 'crow_' + pool
-		if hasattr(self.client, pool):
-			return getattr(self.client, pool)
-		return None
 
 
 class crowhandler(object):
@@ -393,7 +408,7 @@ class crowhandler(object):
 		for key in params.keys():
 			if key in req:
 				params[key] = parsers[key](req[key])
-		db = self.app.getDB(params.pool)
+		db = self.app.dbmgr.conn(params.pool)
 		return db, params
 
 	def timedomain(self, params):
@@ -514,6 +529,7 @@ class current(crowhandler):
 			]
 		}
 
+		db.close()
 		return result
 
 
@@ -621,6 +637,7 @@ class starts(crowhandler):
 		# if cached and cached results are wanted, return those
 		results = self.cachecheck(db, params)
 		if results:
+			db.close()
 			return results
 
 		# need to tune the db selection based on $rel
@@ -701,6 +718,7 @@ class starts(crowhandler):
 		# having current results, and cache this result for the next caller
 		qkey = self.cache(db, params, json.dumps(result), lifetime=cacheduration(interval))
 		self.log('t(cache %s) = %.5fs' % (qkey, t.check()))
+		db.close()
 		return result
 
 
@@ -740,7 +758,6 @@ class distincts(crowhandler):
 	def __call__(self, *args, **kwargs):
 		req = self.request.json
 
-		db = self.app.getDB(req['pool'])
 
 		interval = 720 * 3600
 		if 'interval' in req:
@@ -816,7 +833,8 @@ class crowmw(object):
 			limit = self.config.getint('server', 'memorylimit')
 		if maxrss / (1024 * 1024) > limit:
 			print 'memory limit breached (%d)' % limit
-			sys.exit(255)
+			# simple exit often fails
+			os.kill(os.getpid(), signal.SIGTERM)
 
 
 def main(args):
