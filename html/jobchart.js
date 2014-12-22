@@ -189,7 +189,7 @@ function load() {
 		$('#flying img').attr('src', 'standing.png').addClass('failed');
 		$('#moon').css('background-color', '#c00');
 		$('span.status').html('has failed. probably.');
-	}, 60000);
+	}, 90000);
 
 	// why? $.ajaxSetup({async: false});
 	$.ajax({
