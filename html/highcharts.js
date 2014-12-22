@@ -3811,7 +3811,8 @@ SVGRenderer.prototype = {
 		fontSize = fontSize || this.style.fontSize;
 		if (elem && win.getComputedStyle) {
 			elem = elem.element || elem; // SVGElement
-			fontSize = win.getComputedStyle(elem, "").fontSize;
+			// dgc // fontSize = win.getComputedStyle(elem, "").fontSize;
+			try{fontSize = win.getComputedStyle(elem, "").fontSize;}catch(e){console.log(elem);}
 		}
 		fontSize = /px/.test(fontSize) ? pInt(fontSize) : /em/.test(fontSize) ? parseFloat(fontSize) * 12 : 12;
 
