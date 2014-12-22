@@ -262,11 +262,14 @@ class crowhandler(object):
 		self.reqid = self.app.instance + '.' + str(self.reqno)
 		self.curtime = int(time.time())
 		self._usecache = True
+		self.logbuf = []
 
 		self.app.mw.status()
 
 	def log(self, msg):
-		print '[%s %.3f] %s' % (self.reqid, time.time(), msg)
+		msg = '[%s %.3f] %s' % (self.reqid, time.time(), msg)
+		self.logbuf.append(msg)
+		sys.stdout.write(msg + '\n')
 		sys.stdout.flush()
 
 	def tconv(self, s):
@@ -727,6 +730,9 @@ class starts(crowhandler):
 		qkey = self.cache(db, params, json.dumps(result), lifetime=cacheduration(interval))
 		self.log('t(cache %s) = %.5fs' % (qkey, t.check()))
 		db.close()
+
+		# Add the log to the returned data
+		result['log'] = self.logbuf
 		return result
 
 
