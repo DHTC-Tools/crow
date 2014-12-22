@@ -8,13 +8,11 @@
 	left: 0;
 	bottom: 0;
 	right: 0;
-	background-color: #111;
 	z-index: 10;
 }
 #moon {
 	margin: auto;
 	position: absolute;
-	display: block;
 	background-color: #dee;
 	top: 0;
 	left: 50%;
@@ -24,6 +22,7 @@
 	border-radius: 110px;
 	z-index: 5;
 }
+
 #flying img {
 	position: fixed;
 	left: 50%;
@@ -42,17 +41,38 @@
 	transform: scaleY(-1) translateX(-50%);
 	z-index: 10 !important;
 }
+
 p.credit a {
 	color: #ccf;
 }
 #flying p.credit {
-	color: #eee;
 	position: absolute;
 	bottom: 0;
 	margin-left: 3em;
 	margin-right: auto;
 	font-size: 50%;
 }
+
+#flying.midnight {
+	background-color: #111;
+}
+#flying.midnight #moon {
+	display: block;
+}
+#flying.midnight p.credit {
+	color: #eee;
+}
+
+#flying.daytime {
+	background-color: inherit;
+}
+#flying.daytime #moon {
+	display: none;
+}
+#flying.daytime p.credit {
+	color: #aaa;
+}
+
 #flying div.status {
 	font-family: "HelveticaNeueBlack", "HelveticaNeue-Black", "Helvetica Neue Black", "HelveticaNeueHeavy", "HelveticaNeue-Heavy", "Helvetica Neue Heavy", "HelveticaNeueBold", "HelveticaNeue-Bold", "Helvetica Neue Bold", "HelveticaNeue", "Helvetica Neue", 'TeXGyreHerosBold', "Arial Black", sans-serif;
 	font-weight: 000;
