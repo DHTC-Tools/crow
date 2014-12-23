@@ -867,7 +867,29 @@ def main(args):
 	cherrypy.config.update({'tools.log_headers.on': False})
 	if dowser:
 		cherrypy.tree.mount(dowser.Root(), '/dowser')
-	cherrypy.quickstart(mw, '/', '/web/crow/server/crow-server.conf')
+
+	cpy = {
+		'global': {
+			'server.socket_host': '0.0.0.0',
+			'server.socket_port': 8080,
+			'log.screen': True,
+			'log.access_file': None,
+			'server.thread_pool': 100,
+		},
+		'/': {
+			'response.timeout': 6000,
+			'request.dispatch': cherrypy.dispatch.MethodDispatcher(),
+			'tools.sessions.on': False,
+			'tools.response_headers.on': False,
+		},
+	}
+
+	if cfg.has_section('cherrypy'):
+		if cfg.has_option('cherrypy', 'port'):
+			cpy['global']['server.socket_port'] = cfg.getint('cherrypy', 'port')
+
+	cherrypy.quickstart(mw, '/', cpy)
+	#no longer#cherrypy.quickstart(mw, '/', '/web/crow/server/crow-server.conf')
 
 
 if __name__ == '__main__':	  
