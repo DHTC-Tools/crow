@@ -95,15 +95,17 @@ def cacheduration(t):
 
 
 def sanitime(sec):
-	for sane in (minute, 2*minute, 150, 5*minute, 10*minute,
-	             15*minute, 30*minute, hour, 2*hour, 3*hour,
-	             4*hour, 6*hour, 12*hour, day, week, 2*week,
-	             month, 6*month, year):
-		if sec < sane:
+	for sane in (minute, 2*minute, 5*minute, 10*minute, 15*minute,
+	             20*minute, 30*minute, hour, 2*hour, 3*hour,
+	             4*hour, 6*hour, 12*hour, day, week):
+		if sec <= sane:
 			return sane
 
-	# if still here, use year
-	return year
+	n = 0
+	while sec > week * n:
+		n += 1
+
+	return week * n
 
 
 class timer(object):
@@ -421,10 +423,14 @@ class crowhandler(object):
 		else:
 			interval = params.hours * 3600
 			startTime = self.tconv(params.start)
-		self.log('interval = %d + %d (%s++)' % (startTime, interval, time.ctime(startTime)))
-		extra = startTime % interval
+
+		# find how much over the zero bin boundary our start time is
+		extra = startTime % params.binwidth
+		# wind start back by that much, to place it at the interval boundary
 		startTime -= extra
 		interval += extra
+		self.log('interval = %d + %d (%s++)' % (startTime, interval, time.ctime(startTime)))
+
 		return startTime, interval
 
 	def cachecheck(self, db, params):
@@ -471,9 +477,8 @@ class current(crowhandler):
 	exposed = True
 
 	cacheignores = [
-		# n.b. width doesn't affect queried data, so ignore that in /current queries
-		'width',
-		# current doesn't either - it only changes whether we check for cached data
+		# current doesn't affect queried data, so ignore that in /current queries
+		# (it only changes whether we check for cached data)
 		'current',
 	]
 
@@ -540,9 +545,8 @@ class starts(crowhandler):
 	# some query params should not differentiate one qstring from another --
 	# we want to ignore them for the purpose of generating a cache hash.
 	cacheignores = [
-		# n.b. width doesn't affect queried data, so ignore that in /current queries
-		'width',
-		# current doesn't either - it only changes whether we check for cached data
+		# current doesn't affect queried data, so ignore that in /current queries
+		# (it only changes whether we check for cached data)
 		'current',
 	]
 
@@ -625,11 +629,15 @@ class starts(crowhandler):
 			'binwidth': [0, int],
 			'current': ['false', self.parsebool],		# euphemism: current == True -> no caching please
 		})
+		self.log('processed params: %s' % str(params))
 
 		startTime, interval = self.timedomain(params)
 
 		# sanitize binwidth
-		params.binwidth = sanitime(params.binwidth);
+		# we're sanitizing this at the caller now, I think we should just
+		# let the caller ask for whatever it wants so that we needn't keep
+		# the sanitizing logic in sync between them.
+		#params.binwidth = sanitime(params.binwidth);
 
 		# init binning device
 		bins = magicbag(params.binwidth, interval)
