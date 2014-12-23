@@ -6,7 +6,7 @@ var params = {
 	height: [$(window).height() - 50, parseInt], //600,
 	hours: [48, parseInt],
 	minbin: [10, parseInt],
-	maxbin: [40, parseInt],
+	//maxbin: [40, parseInt],
 	pool: ['osg', String],
 	project: ['all', String],
 	user: ['all', String],
@@ -132,6 +132,7 @@ function load() {
 
 	$('#crowgraph').css({width: params.width, height: params.height});
 
+if (0) {
 	/* Start with one bin per hour */
 	bins = params.hours;
 	binwidth = 3600;
@@ -147,6 +148,39 @@ function load() {
 		bins *= 2;
 		binwidth /= 2;
 	}
+}
+
+	/* Start with one bin per minute */
+	basebins = params.hours * 60;
+	basebinwidth = 60;
+
+	/* Column width is chartwidth/bins.  Scale up by reasonable increments
+	 * until column width > minbin.
+	 * N.B. This MUST match with the values in the "sanitime" function
+	 * in crow-server!  */
+	increments = [1, 2, 5, 10, 15, 20, 30, 60, 2*60, 3*60, 4*60, 6*60, 12*60, 24*60, 7*24*60];
+	for (var inc in increments) {
+		inc = increments[inc];
+		bins = basebins / inc;
+		binwidth = basebinwidth * inc;
+		if (params.width / bins >= params.minbin)
+			break;
+	}
+
+	/* If we still haven't hit it, start going by whole weeks */
+	var n = 0;
+	while (params.width / bins < params.minbin) {
+		n += 1;
+		bins = basebins / (n * 10080);
+		binwidth = basebinwidth * (n * 10080);
+	}
+
+	/* temp - debug */
+	console.log('inc = ' + inc);
+	console.log('n = ' + n);
+	console.log('hours = ' + params.hours);
+	console.log('bins = ' + bins);
+	console.log('binwidth = ' + binwidth);
 
 	yLabels = {
 		running: 'Jobs Running',
@@ -155,14 +189,27 @@ function load() {
 		submitted: 'Jobs Submitted',
 	}
 
-	var options = {
+	function plotdata(targetID, data) {
+		params.width = $(window).width() - 50;
+		params.height = $(window).height() - 50;
+
+		/* Hide the controls? */
+		if (params['nocontrol'] == true) {
+			$('#controls').hide();
+		}
+		else {
+			$('#controls').show();
+			params.height -= $('#controls').height();
+		}
+
+		var options = {
 			chart: {
-				renderTo: 'crowgraph',
+				renderTo: targetID,
 				zoomType: 'xy',
 				type: 'column',
 				//margin: [ 60, 30, 45, 70 ],
 				width: params.width,
-				height: params.height
+				height: params.height,
 			},
 			plotOptions: {
 				column: {
@@ -176,14 +223,30 @@ function load() {
 			xAxis: { type: 'datetime', tickWidth: 0, gridLineWidth: 1, title: { text: 'Date/Time (local to you)' } },
 			yAxis: { title: { text: yLabels[params.rel] } },
 			legend: { align: 'left', verticalAlign: 'top', y: 10, floating: true, borderWidth: 0 },
-			//exporting: {	   buttons: { contextButton: {	text: 'Export' } }, sourceHeight:1050, sourceWidth: 1485	},
+			disabled_exporting: {
+				buttons: {
+					contextButton: {
+						text: 'Export'
+					}
+				},
+				sourceHeight: 1050,
+				sourceWidth: 1485,
+			},
 			credits: { enabled: false },
 			tooltip: { formatter: function() {
 				return ('<b>' + this.series.name + '</b><br/>' +
 					Highcharts.dateFormat('%a %d %b %Y, %H:%M', this.x) + '<br/>' +
 					'Jobs: ' + this.y)
 			} }
-	}; 
+		}; 
+
+		options.series = data.plot;
+		try {
+			chart = new Highcharts.Chart(options); 
+		} catch(e) {
+			console.log(e);
+		}
+	}
 
 	var failtimer = setTimeout(function () {
 		$('#flying img').attr('src', 'standing.png').addClass('failed');
@@ -194,7 +257,7 @@ function load() {
 	// why? $.ajaxSetup({async: false});
 	$.ajax({
 		type: "POST",
-		url: "/service/mongo-crow/starts",
+		url: "/service/mongo-crowdev/starts",
 		data: JSON.stringify({
 			"project": params.project,
 			"user": params.user,
@@ -215,11 +278,11 @@ function load() {
 		success: function(data) {
 			clearTimeout(failtimer);
 			$('#crowgraph').show();
-			options.series = data.plot;
-			try {
-			chart = new Highcharts.Chart(options); 
-			} catch(e) { console.log(e); }
+			plotdata('crowgraph', data);
 			$('#flying').remove();
+			$(window).resize(function () {
+				plotdata('crowgraph', data);
+			});
 		},
 		failure: function(errMsg) {
 			alert(errMsg);
@@ -238,13 +301,6 @@ $(document).ready(function () {
 		}
 	}
 
-	/* Hide the controls? */
-	if (params['nocontrol'] == true) {
-		$('#controls').hide();
-	}
-	else {
-		params['height'] -= $('#controls').height();
-	}
 	$('#controls .optional').hide();
 
 	initcontrols();
