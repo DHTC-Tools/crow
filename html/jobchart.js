@@ -248,6 +248,13 @@ if (0) {
 		}
 	}
 
+	function dumplog(data) {
+		if (! ('log' in data))
+			return;
+		for (var i in data.log)
+			console.log('SERVER LOG: ' + data.log[i]);
+	}
+
 	var failtimer = setTimeout(function () {
 		$('#flying img').attr('src', 'standing.png').addClass('failed');
 		$('#moon').css('background-color', '#c00');
@@ -283,6 +290,7 @@ if (0) {
 			$(window).resize(function () {
 				plotdata('crowgraph', data);
 			});
+			dumplog(data);
 		},
 		failure: function(errMsg) {
 			alert(errMsg);
