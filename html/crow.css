@@ -64,7 +64,7 @@ p.credit a {
 }
 
 #flying.daytime {
-	background-color: inherit;
+	background-color: #eef;
 }
 #flying.daytime #moon {
 	display: none;
@@ -134,4 +134,151 @@ div.control.x3wide {
 }
 #controls .optional {
 	padding-top: 0.75em;
+}
+
+
+// animation
+#flying.daytime div.cloud div.cloud-bubble.dummy {
+	display: none;
+}
+
+#flying.daytime div.clouds div.cloud div.cloud-bubble:nth-of-type(2) {
+	position: absolute;
+	width: 120px;
+	height: 120px;
+	border-radius: 60px;
+	background-color: white;
+	top: 0;
+	transform: translate(0px, 0px);
+}
+#flying.daytime div.clouds div.cloud div.cloud-bubble:nth-of-type(3) {
+	position: absolute;
+	width: 120px;
+	height: 120px;
+	border-radius: 60px;
+	background-color: white;
+	top: 0;
+	transform: translate(100px, 15px);
+}
+#flying.daytime div.clouds div.cloud div.cloud-bubble:nth-of-type(4) {
+	position: absolute;
+	width: 120px;
+	height: 120px;
+	border-radius: 60px;
+	background-color: white;
+	top: 0;
+	transform: translate(50px, 30px);
+}
+
+#flying.daytime div.clouds div.cloud:nth-of-type(2) div.cloud-bubble:nth-of-type(2) {
+	position: absolute;
+	width: 80px;
+	height: 80px;
+	border-radius: 40px;
+	background-color: white;
+	top: 0;
+	transform: translate(0px, 0px);
+}
+#flying.daytime div.clouds div.cloud:nth-of-type(2) div.cloud-bubble:nth-of-type(3) {
+	position: absolute;
+	width: 80px;
+	height: 80px;
+	border-radius: 40px;
+	background-color: white;
+	top: 0;
+	transform: translate(60px, 10px);
+}
+#flying.daytime div.clouds div.cloud:nth-of-type(2) div.cloud-bubble:nth-of-type(4) {
+	position: absolute;
+	width: 80px;
+	height: 80px;
+	border-radius: 40px;
+	background-color: white;
+	top: 0;
+	transform: translate(40px, 20px);
+}
+
+#flying.daytime div.clouds div.cloud {
+	//position: absolute;
+	left: 0px;
+	top: 0px;
+	animation: cloudAnimation linear 23s;
+	animation-iteration-count: infinite;
+	transform-origin: translate(100%, 20px);
+	-webkit-animation: cloudAnimation linear 23s;
+	-webkit-animation-iteration-count: infinite;
+	-webkit-animation-transform-origin: translate(100%, 20px);
+	-moz-animation: cloudAnimation linear 23s;
+	-moz-animation-iteration-count: infinite;
+	-moz-animation-transform-origin: translate(100%, 20px);
+	-o-animation: cloudAnimation linear 23s;
+	-o-animation-iteration-count: infinite;
+	-o-animation-transform-origin: translate(100%, 20px);
+	-ms-animation: cloudAnimation linear 23s;
+	-ms-animation-iteration-count: infinite;
+	-ms-animation-transform-origin: translate(100%, 20px);
+}
+#flying.daytime div.clouds div.cloud:nth-of-type(2) {
+	right: 20%;
+	top: 20px;
+	animation: cloudAnimation linear 31s;
+	animation-iteration-count: infinite;
+	transform-origin: translate(100%, 20px);
+	-webkit-animation: cloudAnimation linear 31s;
+	-webkit-animation-iteration-count: infinite;
+	-webkit-animation-transform-origin: translate(100%, 20px);
+	-moz-animation: cloudAnimation linear 31s;
+	-moz-animation-iteration-count: infinite;
+	-moz-animation-transform-origin: translate(100%, 20px);
+	-o-animation: cloudAnimation linear 31s;
+	-o-animation-iteration-count: infinite;
+	-o-animation-transform-origin: translate(100%, 20px);
+	-ms-animation: cloudAnimation linear 31s;
+	-ms-animation-iteration-count: infinite;
+	-ms-animation-transform-origin: translate(100%, 20px);
+}
+
+@keyframes cloudAnimation {
+  0% {
+    transform: translate(100%,0px);
+  }
+  100% {
+    transform: translate(-100%,0px);
+  }
+}
+
+@-moz-keyframes cloudAnimation {
+  0% {
+    -moz-transform: translate(100%,0px);
+  }
+  100% {
+    -moz-transform: translate(-100%,0px);
+  }
+}
+
+@-webkit-keyframes cloudAnimation {
+  0% {
+    -webkit-transform: translate(100%,0px);
+  }
+  100% {
+    -webkit-transform: translate(-100%,0px);
+  }
+}
+
+@-o-keyframes cloudAnimation {
+  0% {
+    -o-transform: translate(100%,0px);
+  }
+  100% {
+    -o-transform: translate(-100%,0px);
+  }
+}
+
+@-ms-keyframes cloudAnimation {
+  0% {
+    -ms-transform: translate(100%,0px);
+  }
+  100% {
+    -ms-transform: translate(-100%,0px);
+  }
 }

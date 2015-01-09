@@ -16,6 +16,8 @@ var params = {
 	end: ['default', String],
 	nocontrol: ['false', bool],
 	current: ['false', bool],
+	binwidth: [0, parseInt],
+	tzoff: [0, parseInt],
 };
 
 var groupings = {
@@ -132,47 +134,46 @@ function load() {
 
 	$('#crowgraph').css({width: params.width, height: params.height});
 
-if (0) {
-	/* Start with one bin per hour */
-	bins = params.hours;
-	binwidth = 3600;
+	if (params.binwidth == 0) {
+		/* boundary is the multiple at which bin boundaries should be set.
+		 * Normally this is computed by the server based on bin width. That's
+		 * what boundary=0 implies.  */
+		boundary = 0;
 
-	/* Bin width is chartwidth/bins.  If this is too small, then make fewer bins */
-	while (params.width / bins < params.minbin) {
-		bins /= 2;
-		binwidth *= 2;
+		/* Start with one bin per minute */
+		basebins = params.hours * 60;
+		basebinwidth = 60;
+
+		/* Column width is chartwidth/bins.  Scale up by reasonable increments
+		 * until column width > minbin.
+		 * N.B. This MUST match with the values in the "sanitime" function
+		 * in crow-server!  */
+		increments = [1, 2, 5, 10, 15, 20, 30, 60, 2*60, 3*60, 4*60, 6*60, 12*60, 24*60, 7*24*60];
+		for (var inc in increments) {
+			inc = increments[inc];
+			bins = basebins / inc;
+			binwidth = basebinwidth * inc;
+			if (params.width / bins >= params.minbin)
+				break;
+		}
+
+		/* If we still haven't hit it, start going by whole weeks */
+		var n = 0;
+		while (params.width / bins < params.minbin) {
+			n += 1;
+			bins = basebins / (n * 10080);
+			binwidth = basebinwidth * (n * 10080);
+		}
 	}
+	else {
+		/* If given, binwidth is in minutes. Convert to seconds. */
+		binwidth = params.binwidth * 60;
+		bins = params.hours * 60 * 60 / binwidth;
 
-	/* Similarly, if binwidth is too small, then make more */
-	while (params.width / bins > params.maxbin) {
-		bins *= 2;
-		binwidth /= 2;
-	}
-}
-
-	/* Start with one bin per minute */
-	basebins = params.hours * 60;
-	basebinwidth = 60;
-
-	/* Column width is chartwidth/bins.  Scale up by reasonable increments
-	 * until column width > minbin.
-	 * N.B. This MUST match with the values in the "sanitime" function
-	 * in crow-server!  */
-	increments = [1, 2, 5, 10, 15, 20, 30, 60, 2*60, 3*60, 4*60, 6*60, 12*60, 24*60, 7*24*60];
-	for (var inc in increments) {
-		inc = increments[inc];
-		bins = basebins / inc;
-		binwidth = basebinwidth * inc;
-		if (params.width / bins >= params.minbin)
-			break;
-	}
-
-	/* If we still haven't hit it, start going by whole weeks */
-	var n = 0;
-	while (params.width / bins < params.minbin) {
-		n += 1;
-		bins = basebins / (n * 10080);
-		binwidth = basebinwidth * (n * 10080);
+		/* boundary is the multiple at which bin boundaries should be set.
+		 * Normally this is computed by the server based on bin width. If
+		 * an explicit binwidth is set, we'll set boundary to the same. */
+		boundary = binwidth;
 	}
 
 	/* temp - debug */
@@ -274,11 +275,13 @@ if (0) {
 			"groupby": groupings[params.groupby],
 			//"bins": bins,
 			"binwidth": binwidth,
+			"boundary": boundary,
 			"width": params.width,
 			"rel": params.rel,
 			"start": params.start,
 			"end": params.end,
 			"current": params.current,
+			"tzoff": params.tzoff,
 		}),
 		contentType: "application/json; charset=utf-8",
 		dataType: "json",
