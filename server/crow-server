@@ -782,16 +782,14 @@ class starts(crowhandler):
 
 		# Drop jobs into bins according to our search relation
 		# and their time attributes.
-		self.bin(bins, params, rows, startTime)
+		totals = self.bin(bins, params, rows, startTime)
 
 		result = {
 			'plot': [],
 		}
 		for p in bins.keys():
-			total = groups[p]
-			total = sum([v.value for v in bins[p]])
 			series = {
-				'name': p + ' (' + str(total) + ')',
+				'name': p + ' (' + str(totals[p]) + ')',
 				'data': [(v.low, v.value) for v in bins[p]],
 			}
 			result['plot'].append(series)
@@ -811,6 +809,7 @@ class starts(crowhandler):
 	@timer.timed('binning')
 	def bin(self, bins, params, rows, start):
 		n = 0
+		totals = {}
 		for r in rows:
 			# each r is a job record
 			group = r['latest'][params.groupby]
@@ -820,11 +819,17 @@ class starts(crowhandler):
 			if last > bins.nbins:
 				last = bins.nbins
 			#print '>>', r['_id'], self.curtime, first, last, bins.nbins
+
+			if group not in totals:
+				totals[group] = 0
+			totals[group] += self.rel[params.rel][1](r)
+
 			for b in range(first, last+1):
 				try:
 					bins[group][b].value += self.rel[params.rel][1](r)
 				except IndexError:
 					pass
+		return totals
 
 
 class distincts(crowhandler):
@@ -964,8 +969,10 @@ def main(args):
 	}
 
 	if cfg.has_section('cherrypy'):
-		if cfg.has_option('cherrypy', 'port'):
-			cpy['global']['server.socket_port'] = cfg.getint('cherrypy', 'port')
+		if cfg.has_option('cherrypy', 'socket_host'):
+			cpy['global']['server.socket_host'] = cfg.get('cherrypy', 'socket_host')
+		if cfg.has_option('cherrypy', 'socket_port'):
+			cpy['global']['server.socket_port'] = cfg.getint('cherrypy', 'socket_port')
 
 	cherrypy.quickstart(mw, '/', cpy)
 	#no longer#cherrypy.quickstart(mw, '/', '/web/crow/server/crow-server.conf')
