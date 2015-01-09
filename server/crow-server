@@ -937,7 +937,7 @@ def main(args):
 		cfg.read(file)
 
 	file = base + '.ini'
-	for path in ('/etc', file), (home, 'etc', file), (home, file):
+	for path in ('/etc', file), (home, 'etc', file), (home, file), (home, 'server', file):
 		file = os.path.join(*path)
 		#print 'Trying %s ...' % file
 		cfg.read(file)
