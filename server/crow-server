@@ -589,11 +589,17 @@ class starts(crowhandler):
 
 		return stime, etime
 
-	def _startend(self, r, startprop):
-		for endprop in 'completed dequeued'.split():
-			if endprop in r['lifecycle'] and r['lifecycle'][endprop]:
-				return r['lifecycle'][startprop], r['lifecycle'][endprop]
-		return r['lifecycle'][startprop], r['lifecycle']['unobserved']
+	def _startend(self, r, startprops):
+		start = 0
+		for prop in startprops:
+			if prop in r['lifecycle'] and r['lifecycle'][prop]:
+				start = r['lifecycle'][prop]
+				break
+
+		for prop in 'completed dequeued'.split():
+			if prop in r['lifecycle'] and r['lifecycle'][prop]:
+				return start, r['lifecycle'][prop]
+		return start, r['lifecycle']['unobserved']
 
 
 	# The following functions evaluate correct
@@ -624,7 +630,7 @@ class starts(crowhandler):
 	# This decides during which bins' periods a job was running.
 	def _running(self, r, start, width):
 		#stime, etime = self._startend(r, 'JobStartDate')
-		stime, etime = self._startend(r, 'started')
+		stime, etime = self._startend(r, ['started', 'queued'])
 		first, last = int((stime - start) / width), int((etime - start) / width)
 		return first, last
 
@@ -635,7 +641,7 @@ class starts(crowhandler):
 	# This decides during which bin's period a job started.
 	def _started(self, r, start, width):
 		#stime, etime = self._startend(r, 'JobCurrentStartDate')
-		stime, etime = self._startend(r, 'started')
+		stime, etime = self._startend(r, ['started', 'queued'])
 		first, last = int((stime - start) / width), int((etime - start) / width)
 		return first, first
 
@@ -647,13 +653,14 @@ class starts(crowhandler):
 	def _finished(self, r, start, width):
 		#stime, etime = self._startend(r, 'JobStartDate')
 		stime, etime = self._startend(r, 'started')
+		stime, etime = self._startend(r, ['started', 'queued'])
 		first, last = int((stime - start) / width), int((etime - start) / width)
 		return last, last
 
 
 	def _submitted(self, r, start, width):
 		#stime, etime = self._startend(r, 'QDate')
-		stime, etime = self._startend(r, 'queued')
+		stime, etime = self._startend(r, ['queued'])
 		first, last = int((stime - start) / width), int((etime - start) / width)
 		return first, last
 
@@ -664,7 +671,7 @@ class starts(crowhandler):
 	#   * a lambda that tells how many jobs to log to the bin
 	rel = {
 		'default': (_running, lambda r: 1),
-		'submitted': (_started, lambda r: 1),
+		'submitted': (_submitted, lambda r: 1),
 		'running': (_running, lambda r: 1),
 		'started': (_started, lambda r: 1),
 		'finished': (_finished, lambda r: 1),
@@ -788,6 +795,8 @@ class starts(crowhandler):
 			'plot': [],
 		}
 		for p in bins.keys():
+			if totals[p] == 0:
+				continue
 			series = {
 				'name': p + ' (' + str(totals[p]) + ')',
 				'data': [(v.low, v.value) for v in bins[p]],
@@ -822,7 +831,10 @@ class starts(crowhandler):
 
 			if group not in totals:
 				totals[group] = 0
-			totals[group] += self.rel[params.rel][1](r)
+			#if last - first >= 0:
+			#	totals[group] += 1
+			totals[group] += 1
+			#print 'totals.%s += 1' % (group,)
 
 			for b in range(first, last+1):
 				try:
@@ -949,8 +961,8 @@ def main(args):
 
 	mw = crowmw(cfg)
 	cherrypy.config.update({'tools.log_headers.on': False})
-	if dowser:
-		cherrypy.tree.mount(dowser.Root(), '/dowser')
+	#if dowser:
+	#	cherrypy.tree.mount(dowser.Root(), '/dowser')
 
 	cpy = {
 		'global': {
