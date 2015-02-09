@@ -39,7 +39,15 @@ var controlparams = {
 	//height: null,
 	start: null,
 	//end: null,
-	hours: [1, 2, 4, 8, 16, 24, 48, 72, 168, 720, 8760],
+	//hours: [1, 2, 4, 8, 16, 24, 48, 72, 168, 720, 8760],
+	hours: [1, 2, 4, 8, 16,
+	        // Just some different ways to do this:
+	        ['1 day', 24],
+	        ['2 days', 48],
+	        {content: '3 days', value: 72},
+	        {content: '1 week', value: 168},
+	        {content: '1 month', value: 720},
+	       ],
 	//minbin: null,
 };
 
@@ -59,24 +67,42 @@ function initcontrols() {
 	for (var key in controlparams) {
 		var node = $('#' + key);
 		if (controlparams[key] === parseInt(controlparams[key])) {
+			// why would this happen?
 			node.val(controlparams[key]);
 		}
 		else if (controlparams[key] === String(controlparams[key])) {
+			// why would this happen?
 			node.val(controlparams[key]);
 		}
 		else if (controlparams[key] === null) {
+			// used to disable feature I guess
 			node.val('');
 		}
 		else if ('length' in controlparams[key]) {
+			// controlparams.key = [array...]
+
 			for (var i in controlparams[key]) {
-				var value = controlparams[key][i];
+				var o = controlparams[key][i];
 				var option = $('<option>')
-					.attr('value', value)
-					.text(value);
+				if (o === parseInt(o) || o === String(o)) {
+					option.attr('value', o)
+					      .text(o);
+				}
+				else if ('length' in o) {
+					// array: [0] is content ("label"), [1] is value
+					option.text(o[0])
+					      .attr('value', o[1]);
+				}
+				else if ('content' in o) {
+					// object: populate option accordingly
+					option.text(o.content);
+					for (var k in o)
+						option.attr(k, o[k]);
+				}
 				node.append(option);
+				if (String(params[key]) == String(option.val()))
+					node.val(params[key]);  /* select option if option is valid */
 			}
-			if (controlparams[key].indexOf(params[key]) > -1)
-				node.val(params[key]);  /* select option if option is valid */
 		}
 		node.keyup(update);
 		node.change(update);
@@ -84,6 +110,7 @@ function initcontrols() {
 	$('#moreopts').change(update);
 	$('#nocache').change(update);
 	update();
+	$('#controls').show();
 }
 
 function getvalue(key) {
@@ -265,7 +292,7 @@ function load() {
 	// why? $.ajaxSetup({async: false});
 	$.ajax({
 		type: "POST",
-		url: "/service/mongo-crowdev/starts",
+		url: "/service/mongo-crow/starts",
 		data: JSON.stringify({
 			"project": params.project,
 			"user": params.user,
@@ -313,14 +340,15 @@ $(document).ready(function () {
 	}
 
 	$('#controls .optional').hide();
-
-	initcontrols();
+	$('#controls').hide();
 	$('#flying').hide();
 	load();
 });
 
 	// delay the crow animation by 2s in case response is quick
 	setTimeout(function () {
+		initcontrols();
+
 		//$('#crowgraph').hide();
 		$('#flying').show();
 
