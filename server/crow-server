@@ -699,6 +699,7 @@ class starts(crowhandler):
 
 	def __call__(self, *args, **kwargs):
 		self.log('initial postdata: %s' % self.request.json)
+		t_total = timer().start()
 
 		# XXX consider putting db and params into self
 
@@ -825,6 +826,8 @@ class starts(crowhandler):
 		qkey = self.cache(db, params, json.dumps(result), lifetime=cacheduration(interval))
 		self.log('t(cache %s) = %.5fs' % (qkey, t.check()))
 		db.close()
+
+		self.log('t(total) = %.5fs' % t_total.check())
 
 		# Add the log to the returned data
 		result['log'] = self.logbuf
