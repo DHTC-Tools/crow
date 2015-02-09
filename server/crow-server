@@ -391,7 +391,12 @@ class crowhandler(object):
 		# optimization here, but lacking that let's optimize to the more
 		# common scenario.
 
-		andFilters = []
+		# It appears that Mongo cannot optimize (A1|A2) & B & C internally
+		# into a query that will take advantage of compound indexes over (A,
+		# B, C), so we need to expand this out to (A1 & B & C) | (A2 & B & C)
+		# ourselves.
+
+		# Let's start by defining some symbolic subfilters.
 
 		# jobs must have been queued before our interval ended
 		began_before_interval = {'lifecycle.queued': {'$lt': startTime + interval}}
@@ -402,23 +407,38 @@ class crowhandler(object):
 		# ...or have completed after our interval began
 		completed_after_interval = {'lifecycle.unobserved': {'$gt': startTime}}
 
-		# most constraining filters first (see above)
-		andFilters.append(self._or(in_queue, completed_after_interval))
-		andFilters.append(began_before_interval)
+		# maybe sometimes we care about this?
+		project_exists = {'latest.ProjectName': {'$exists': True}}
 
-		if (params.project == 'all'):
-			andFilters.append({'latest.ProjectName': {'$exists': True}})
-		else:
-			andFilters.append(self.mongofilter(lambda p: {'latest.ProjectName': p}, params.project))
+		# if we need to isolate single projects
+		project_is_f = lambda p: {'latest.ProjectName': p}
 
+		# or users
+		user_is_f = lambda u: {'latest.User': {'$regex': u + '@*'}}
+
+		_1 = [
+			in_queue,
+			began_before_interval,
+		]
+		if (params.project != 'all'):
+			_1.append(project_is_f(params.project))
 		if (params.user != 'all'):
-			andFilters.append(self.mongofilter(lambda u: {'latest.User': {'$regex': u + '@*'}}, params.user))
-
+			_1.append(user_is_f(params.user))
 		if (params.task != 'all'):
-			andFilters.append({'latest.ClusterId': int(params.task)})
+			_1.append({'latest.ClusterId': int(params.task)})
 
-		select = self._and(*andFilters)
-		return select
+		_2 = [
+			completed_after_interval,
+			began_before_interval,
+		]
+		if (params.project != 'all'):
+			_2.append(project_is_f(params.project))
+		if (params.user != 'all'):
+			_2.append(user_is_f(params.user))
+		if (params.task != 'all'):
+			_2.append({'latest.ClusterId': int(params.task)})
+
+		return self._or(self._and(*_1), self._and(*_2))
 
 	def readparams(self, template):
 		# We could optimize slightly here by moving this to the caller
@@ -745,10 +765,6 @@ class starts(crowhandler):
 		# rows and make into a list.
 		rows = self.retrieve(rows)
 		self.log('selector found %d jobs' % len(rows))
-
-		for row in rows:
-			if 'sthapa' in row['latest']['Owner']:
-				pass #argh.write(row['_id'] + '\n')
 
 
 		# This function performs value distinction across the result
