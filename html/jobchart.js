@@ -40,10 +40,11 @@ var controlparams = {
 	start: null,
 	//end: null,
 	//hours: [1, 2, 4, 8, 16, 24, 48, 72, 168, 720, 8760],
-	hours: [1, 2, 4, 8, 16,
-	        // Just some different ways to do this:
+	hours: [['1 hour', 1],
+	        ['6 hours', 6],
+	        ['12 hours', 12],
 	        ['1 day', 24],
-	        ['2 days', 48],
+	        // Just some different ways to do this:
 	        {content: '3 days', value: 72},
 	        {content: '1 week', value: 168},
 	        {content: '1 month', value: 720},
