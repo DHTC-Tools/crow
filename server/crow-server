@@ -36,8 +36,20 @@ os.environ['TZ'] = 'UTC'
 time.tzset()
 
 
+JobStates = (
+	'unexpanded',
+	'idle',
+	'running',
+	'removed',
+	'completed',
+	'held',
+	'submission-error',
+	'suspended',
+)
+
+
 class GraphiteAdapter(object):
-	def __init__(self, address, prefix, proto='tcp', open=True):
+	def __init__(self, address, prefix, proto='udp', open=True):
 		if hasattr(address, 'lower'):
 			address = (address, 2003)
 		self.address = address
@@ -62,18 +74,21 @@ class GraphiteAdapter(object):
 		self.socket = None
 
 	def __setitem__(self, key, value):
+		if not self.socket:
+			self.reopen()
 		t = time.time()
 		name = self.prefix + '.' + str(key)
 		value = str(value)
-		self.socket.send('%s %s %d\n' % (name, value, int(t)))
+		try:
+			self.socket.send('%s %s %d\n' % (name, value, int(t)))
+		except socket.error:
+			self.close()
 
 	def __call__(self, relprefix):
 		'''Create a sub-connector using the same socket and opener
 		but with an augmented prefix.'''
 		pre = self.prefix + '.' + relprefix
-		new = self.__class__(self.address, pre, proto=self.proto, open=False)
-		new.reopen = self.reopen
-		new.socket = self.socket
+		new = self.__class__(self.address, pre, proto=self.proto)
 		return new
 
 
@@ -190,7 +205,6 @@ class frob(dict):
 	def __setattr__(self, key, value):
 		self[key] = value
 
-
 class magicbag(dict):
 	def __init__(self, width, domain):
 		self._width = width
@@ -233,6 +247,11 @@ class magicbag(dict):
 		for key in keys:
 			self[key] = [mkbin(i) for i in xrange(self.nbins)]
 
+# Magic two-way mapping
+JobStates = frob([(name, n) for n, name in enumerate(JobStates)] +
+                 [(n, name) for n, name in enumerate(JobStates)])
+
+print JobStates
 
 class dbmgr(object):
 	def __init__(self, dbserver):
@@ -350,6 +369,7 @@ class crowhandler(object):
 				return c.join([str(x) for x in args[0]])
 
 		r = CallList()
+		r.close = CallList()
 
 		# If you have any other metrics reporters they can be done
 		# like this, below.  Each reporter function ("_" in these
@@ -363,6 +383,10 @@ class crowhandler(object):
 				graphite[rel] = float(val)
 				return True
 			r.append(_)
+			def _():
+				graphite.close()
+				return True
+			r.close.append(_)
 
 		if self.log:
 			def _(rel, val, verbose=None):
@@ -743,8 +767,8 @@ class starts(crowhandler):
 	# Determine which bins' indices (for a bin set defined by start
 	# and width) intersect a time range given by (stime, etime).
 	#
-	# This decides during which bins' periods a job was running.
-	def _running(self, r, start, width, max):
+	# This decides during which bins' periods a job was in queue.
+	def _inqueue(self, r, start, width, max):
 		#stime, etime = self._startend(r, 'JobStartDate')
 		stime, etime = self._startend(r, ['started', 'queued'])
 		first, last = int((stime - start) / width), int((etime - start) / width)
@@ -753,6 +777,27 @@ class starts(crowhandler):
 		if last > max or last < 0:
 			last = max
 		return first, last
+
+	# When was it actually in running state?
+	def _running(self, r, start, width, max):
+		if r['latest']['JobStatus'] == JobStates.running:
+			return self._inqueue(r, start, width, max)
+		else:
+			return None, None
+
+	# When was it idle?
+	def _idle(self, r, start, width, max):
+		if r['latest']['JobStatus'] == JobStates.idle:
+			return self._inqueue(r, start, width, max)
+		else:
+			return None, None
+
+	# When was it held?
+	def _held(self, r, start, width, max):
+		if r['latest']['JobStatus'] == JobStates.held:
+			return self._inqueue(r, start, width, max)
+		else:
+			return None, None
 
 	# Determine which bin's index (for a bin set defined by start
 	# and width) contains a time point given by stime.  etime
@@ -796,6 +841,9 @@ class starts(crowhandler):
 	rel = {
 		'default': (_running, lambda r: 1),
 		'submitted': (_submitted, lambda r: 1),
+		'inqueue': (_inqueue, lambda r: 1),
+		'idle': (_idle, lambda r: 1),
+		'held': (_held, lambda r: 1),
 		'running': (_running, lambda r: 1),
 		'started': (_started, lambda r: 1),
 		'finished': (_finished, lambda r: 1),
@@ -845,6 +893,7 @@ class starts(crowhandler):
 		results = self.cachecheck(db, params)
 		if results:
 			db.close()
+			self.reporter.close()
 			return results
 
 		# need to tune the db selection based on $rel
@@ -932,13 +981,14 @@ class starts(crowhandler):
 		# even if we asked for no caches on query, we will take advantage of
 		# having current results, and cache this result for the next caller
 		qkey = self.cache(db, params, json.dumps(result), lifetime=cacheduration(interval))
-		self.log('t(cache %s) = %.5fs' % (qkey, t.check()))
+		self.reporter('t_cache', t.check(), verbose='t(cache %s) = %%.5fs' % qkey)
 		db.close()
 
-		self.log('t(total) = %.5fs' % t_total.check())
 
 		# Add the log to the returned data
 		result['log'] = self.logbuf
+		self.reporter('t_total', t.check(), verbose='t(total) = %.5fs')
+		self.reporter.close()
 		return result
 
 
@@ -957,21 +1007,21 @@ class starts(crowhandler):
 	def bin(self, bins, params, rows, start):
 		n = 0
 		totals = {}
-		if True:
-			diagfp = open('/tmp/crowlog.%d' % self.curtime, 'w')
+		diagfp = None #open('/tmp/crowlog.%d' % self.curtime, 'w')
 		for r in rows:
 			# each r is a job record
 			group = r['latest'][params.groupby]
+			if group not in totals:
+				totals[group] = 0
+
 			first, last = self.rel[params.rel][0](self, r, start, bins.width, bins.nbins)
+			if first is None and last is None:
+				continue
+
 			if diagfp:
 				print >>diagfp, '%d %s [%d %d] %d' % (self.curtime, r['_id'], first, last, bins.nbins)
 
-			if group not in totals:
-				totals[group] = 0
-			#if last - first >= 0:
-			#	totals[group] += 1
 			totals[group] += 1
-			#print 'totals.%s += 1' % (group,)
 
 			for b in range(first, last+1):
 				try:
@@ -1056,10 +1106,14 @@ class crowmw(object):
 
 	def status(self):
 		maxrss, idrss = self.memory()
+		load1, load5, load15 = os.getloadavg()
 		if self.graphite:
 			self.graphite['requests'] = 1
 			self.graphite['memory.maxrss'] = maxrss
 			self.graphite['memory.unshared'] = idrss
+			self.graphite['load.load1'] = load1
+			self.graphite['load.load5'] = load5
+			self.graphite['load.load15'] = load15
 
 		# server.memorylimit gives upper boundary on memory utilization
 		limit = 8192
