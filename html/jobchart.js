@@ -34,7 +34,13 @@ if (off > -1)
 var controlparams = {
 	pool: ['osg', 'atlas', 'duke', 'uchicago'], // 'cms', 'umich'],
 	groupby: ['user', 'project'],
-	rel: ['running', 'submitted', 'started', 'finished'],
+	rel: [['In Queue', 'inqueue'],
+	      ['Idle (waiting)', 'idle'],
+	      ['Running', 'running'],
+	      ['Submitted', 'submitted'],
+	      ['Started', 'started'],
+	      ['Completed', 'finished'],
+	],
 	//width: null,
 	//height: null,
 	start: null,
@@ -212,7 +218,9 @@ function load() {
 	console.log('binwidth = ' + binwidth);
 
 	yLabels = {
+		inqueue: 'Jobs in Queue',
 		running: 'Jobs Running',
+		idle: 'Jobs Idle',
 		started: 'Jobs Started',
 		finished: 'Jobs Completed',
 		submitted: 'Jobs Submitted',
