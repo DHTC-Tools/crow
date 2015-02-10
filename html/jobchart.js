@@ -40,6 +40,7 @@ var controlparams = {
 	      ['Submitted', 'submitted'],
 	      ['Started', 'started'],
 	      ['Completed', 'finished'],
+	      ['Held (error)', 'held'],
 	],
 	//width: null,
 	//height: null,
@@ -220,6 +221,7 @@ function load() {
 	yLabels = {
 		inqueue: 'Jobs in Queue',
 		running: 'Jobs Running',
+		held: 'Jobs Held',
 		idle: 'Jobs Idle',
 		started: 'Jobs Started',
 		finished: 'Jobs Completed',
