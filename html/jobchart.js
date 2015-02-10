@@ -34,16 +34,23 @@ if (off > -1)
 var controlparams = {
 	pool: ['osg', 'atlas', 'duke', 'uchicago'], // 'cms', 'umich'],
 	groupby: ['user', 'project'],
-	rel: ['running', 'submitted', 'started', 'finished'],
+	rel: [['In Queue', 'inqueue'],
+	      ['Idle (waiting)', 'idle'],
+	      ['Running', 'running'],
+	      ['Submitted', 'submitted'],
+	      ['Started', 'started'],
+	      ['Completed', 'finished'],
+	],
 	//width: null,
 	//height: null,
 	start: null,
 	//end: null,
 	//hours: [1, 2, 4, 8, 16, 24, 48, 72, 168, 720, 8760],
-	hours: [1, 2, 4, 8, 16,
-	        // Just some different ways to do this:
+	hours: [['1 hour', 1],
+	        ['6 hours', 6],
+	        ['12 hours', 12],
 	        ['1 day', 24],
-	        ['2 days', 48],
+	        // Just some different ways to do this:
 	        {content: '3 days', value: 72},
 	        {content: '1 week', value: 168},
 	        {content: '1 month', value: 720},
@@ -211,7 +218,9 @@ function load() {
 	console.log('binwidth = ' + binwidth);
 
 	yLabels = {
+		inqueue: 'Jobs in Queue',
 		running: 'Jobs Running',
+		idle: 'Jobs Idle',
 		started: 'Jobs Started',
 		finished: 'Jobs Completed',
 		submitted: 'Jobs Submitted',
