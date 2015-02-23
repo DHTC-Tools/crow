@@ -131,9 +131,9 @@ def cacheduration(t):
 	# Should move to config file, so that a single minutely cron job can share data
 	durations = [
 		# (if req period <=, set cache duration to)
-		(1*hour, 1*minute),    # cache low values only briefly
-		(6*hour, 5*minute),    # up to 6h, cache 5 minutes
-		(12*hour, 10*minute),  # up to 12h, cache 10 minutes
+		(1*hour, 2*minute),    # cache low values only briefly
+		(6*hour, 10*minute),   # up to 6h, cache 10 minutes
+		#(12*hour, 10*minute),  # up to 12h, cache 10 minutes
 		(2*day, 15*minute),    # up to a day, cache 15 minutes
 		(2*week, 1*hour),      # up to 2-week, cache 1h
 		(0, 1*day),
@@ -251,7 +251,6 @@ class magicbag(dict):
 JobStates = frob([(name, n) for n, name in enumerate(JobStates)] +
                  [(n, name) for n, name in enumerate(JobStates)])
 
-print JobStates
 
 class dbmgr(object):
 	def __init__(self, dbserver):
@@ -326,7 +325,7 @@ class crowhandler(object):
 		self.logbuf = []
 
 		if self.app.mw.graphite:
-			self.graphite = self.app.mw.graphite(self.__class__.__name__)
+			self.graphite = self.app.mw.graphite('app_' + self.__class__.__name__)
 		else:
 			self.graphite = None
 
@@ -878,7 +877,7 @@ class starts(crowhandler):
 
 		# create a metrics reporter for this query
 		# XXX this is a magic name. @timed deco uses it.
-		self.reporter = self.metricsreporter('%04dh' % params.hours)
+		self.reporter = self.metricsreporter('%s.%04dh' % (params.pool, params.hours))
 
 		# sanitize binwidth
 		# we're sanitizing this at the caller now, I think we should just
@@ -981,13 +980,13 @@ class starts(crowhandler):
 		# even if we asked for no caches on query, we will take advantage of
 		# having current results, and cache this result for the next caller
 		qkey = self.cache(db, params, json.dumps(result), lifetime=cacheduration(interval))
-		self.reporter('t_cache', t.check(), verbose='t(cache %s) = %%.5fs' % qkey)
+		self.reporter('cache', t.check(), verbose='t(cache %s) = %%.5fs' % qkey)
 		db.close()
 
 
 		# Add the log to the returned data
 		result['log'] = self.logbuf
-		self.reporter('t_total', t.check(), verbose='t(total) = %.5fs')
+		self.reporter('total', t.check(), verbose='t(total) = %.5fs')
 		self.reporter.close()
 		return result
 
