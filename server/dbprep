@@ -1,10 +1,17 @@
-The following mongo shell script is used to prepare the database
-by building useful indexes:
+// The following mongo shell script is used to prepare the database
+// by building useful indexes:
 
 var c = new Mongo();
 var pools = ['osg', 'umich', 'uchicago', 'atlas', 'cms', 'duke'];
-var indexed = ['ProjectName', 'User', 'ClusterId', 'JobStatus',
-               'JobStartDate', 'CompletionDate'];
+
+var indexed = ['latest.ProjectName', 'latest.User', 'latest.ClusterId',
+               'latest.JobStatus', 'latest.JobStartDate',
+               'latest.CompletionDate',
+
+               'lifecycle.queued', 'lifecycle.started', 'lifecycle.completed',
+               'lifecycle.dequeued', 'lifecycle.unobserved',
+];
+
 for (var i in pools) {
 	var pool = pools[i];
 	var db = c.getDB('crow_' + pool);
@@ -12,8 +19,9 @@ for (var i in pools) {
                          {expireAfterSeconds: 0, background: true});
 
 	for (var j in indexed) {
-		var key = 'latest.' + indexed[j];
-		db.cache.ensureIndex({key: 1}, {background: true});
+		o = {}
+		o[indexed[j]] = 1;
+		db.jobs.ensureIndex(o, {background: true});
 	}
 }
 

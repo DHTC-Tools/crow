@@ -36,15 +36,28 @@ os.environ['TZ'] = 'UTC'
 time.tzset()
 
 
+JobStates = (
+	'unexpanded',
+	'idle',
+	'running',
+	'removed',
+	'completed',
+	'held',
+	'submission-error',
+	'suspended',
+)
+
+
 class GraphiteAdapter(object):
-	def __init__(self, address, prefix, proto='tcp'):
+	def __init__(self, address, prefix, proto='udp', open=True):
 		if hasattr(address, 'lower'):
 			address = (address, 2003)
 		self.address = address
 		self.proto = proto
 		self.prefix = prefix
 		self.socket = None
-		self.reopen()
+		if open:
+			self.reopen()
 
 	def reopen(self):
 		if self.socket:
@@ -61,10 +74,51 @@ class GraphiteAdapter(object):
 		self.socket = None
 
 	def __setitem__(self, key, value):
+		if not self.socket:
+			self.reopen()
 		t = time.time()
 		name = self.prefix + '.' + str(key)
 		value = str(value)
-		self.socket.send('%s %s %d\n' % (name, value, int(t)))
+		try:
+			self.socket.send('%s %s %d\n' % (name, value, int(t)))
+		except socket.error:
+			self.close()
+
+	def __call__(self, relprefix):
+		'''Create a sub-connector using the same socket and opener
+		but with an augmented prefix.'''
+		pre = self.prefix + '.' + relprefix
+		new = self.__class__(self.address, pre, proto=self.proto)
+		return new
+
+
+class CallList(list):
+	NEVER = 0
+	FAIL = 1
+	SUCCESS = 2
+	
+	def __init__(self, stop=NEVER):
+		self.stop = stop
+
+	def __call__(self, *args, **kwargs):
+		# stop on first failure
+		if self.stop == self.FAIL:
+			for i, item in enumerate(self):
+				if not item(*args, **kwargs):
+					return i
+
+		# stop on first success
+		elif self.stop == self.SUCCESS:
+			for i, item in enumerate(self):
+				if item(*args, **kwargs):
+					return i
+
+		# do all
+		elif self.stop == self.NEVER:
+			n = 0
+			for item in self:
+				n += item(*args, **kwargs)
+			return n
 
 
 class Config(ConfigParser.RawConfigParser):
@@ -74,36 +128,40 @@ class Config(ConfigParser.RawConfigParser):
 
 def cacheduration(t):
 	# Cache duration is a stepwise function of request period
+	# Should move to config file, so that a single minutely cron job can share data
 	durations = [
-		# (if req period >, set cache duration to)
-		(0, minute),         # cache low values only briefly
-		(2*hour, 10*minute),  # above 2h, cache 10 minutes
-		(day, hour),         # above a day, cache 1 hour
-		(2*week, day),       # cache 2-week views for 1 day
-		(6*month, week),     # cache 6-month views for 1 week
+		# (if req period <=, set cache duration to)
+		(1*hour, 2*minute),    # cache low values only briefly
+		(6*hour, 10*minute),   # up to 6h, cache 10 minutes
+		#(12*hour, 10*minute),  # up to 12h, cache 10 minutes
+		(2*day, 15*minute),    # up to a day, cache 15 minutes
+		(2*week, 1*hour),      # up to 2-week, cache 1h
+		(0, 1*day),
 	]
 
-	duration = 0
+	# t may be inflated by binning requirements.
+	# round down to 1 hour.
+	t -= t % 3600
 	for treq, tdur in durations:
-		if t > treq:
-			duration = tdur
+		if t <= treq:
+			return tdur
 
-	# temporary? short-lived items cache short times, long last longer
-	if duration > 2*minute:
-		duration = day
-	return duration
+	# return last duration in list
+	return tdur
 
 
 def sanitime(sec):
-	for sane in (minute, 2*minute, 150, 5*minute, 10*minute,
-	             15*minute, 30*minute, hour, 2*hour, 3*hour,
-	             4*hour, 6*hour, 12*hour, day, week, 2*week,
-	             month, 6*month, year):
-		if sec < sane:
+	for sane in (minute, 2*minute, 5*minute, 10*minute, 15*minute,
+	             20*minute, 30*minute, hour, 2*hour, 3*hour,
+	             4*hour, 6*hour, 12*hour, day, week):
+		if sec <= sane:
 			return sane
 
-	# if still here, use year
-	return year
+	n = 0
+	while sec > week * n:
+		n += 1
+
+	return week * n
 
 
 class timer(object):
@@ -135,7 +193,8 @@ class timer(object):
 				caller = caller.f_locals['self']
 				t = cls().start()
 				r = f(*args, **kwargs)
-				caller.log('t(%s) = %.5fs' % (label, t.check()))
+				if hasattr(caller, 'log'):
+					caller.log('t(%s) = %.5fs' % (label, t.check()))
 				return r
 			return _
 		return _
@@ -145,7 +204,6 @@ class frob(dict):
 		return self[key]
 	def __setattr__(self, key, value):
 		self[key] = value
-
 
 class magicbag(dict):
 	def __init__(self, width, domain):
@@ -189,6 +247,28 @@ class magicbag(dict):
 		for key in keys:
 			self[key] = [mkbin(i) for i in xrange(self.nbins)]
 
+# Magic two-way mapping
+JobStates = frob([(name, n) for n, name in enumerate(JobStates)] +
+                 [(n, name) for n, name in enumerate(JobStates)])
+
+
+class dbmgr(object):
+	def __init__(self, dbserver):
+		self.dbserver = dbserver
+
+	def conn(self, pool):
+		# it doesn't matter what we do internally here, so long
+		# as we return a mongoclient db instance and provide a
+		# close() method on it.
+		client = pymongo.MongoClient(self.dbserver)
+		if not pool.startswith('crow_'):
+			pool = 'crow_' + pool
+		if not hasattr(client, pool):
+			return None
+		db = getattr(client, pool)
+		db.close = client.close
+		return db
+		
 
 class crowapp(object):
 	exposed = True
@@ -202,21 +282,18 @@ class crowapp(object):
 		self.reqno = 0
 		self.dbserver, _ = self.mw.config.getlist('db', 'default')
 		self.client = pymongo.MongoClient(self.dbserver)
+		self.dbmgr = dbmgr(self.dbserver)
 
 	@cherrypy.tools.accept(media='application/json')
 	@cherrypy.tools.json_out()
 	@cherrypy.tools.json_in()
 	def POST(self, *args, **kwargs):
 		self.reqno += 1
+		# XXX ugh
+		if self.reqno > 50000:
+			os.kill(os.getpid(), signal.SIGTERM)
 		handler = self.handler(self, cherrypy.request, self.reqno)
 		return handler(*args, **kwargs)
-
-	def getDB(self, pool):
-		if not pool.startswith('crow_'):
-			pool = 'crow_' + pool
-		if hasattr(self.client, pool):
-			return getattr(self.client, pool)
-		return None
 
 
 class crowhandler(object):
@@ -245,12 +322,82 @@ class crowhandler(object):
 		self.reqid = self.app.instance + '.' + str(self.reqno)
 		self.curtime = int(time.time())
 		self._usecache = True
+		self.logbuf = []
+
+		if self.app.mw.graphite:
+			self.graphite = self.app.mw.graphite('app_' + self.__class__.__name__)
+		else:
+			self.graphite = None
 
 		self.app.mw.status()
 
 	def log(self, msg):
-		print '[%s %.3f] %s' % (self.reqid, time.time(), msg)
+		msg = '[%s %.3f] %s' % (self.reqid, time.time(), msg)
+		self.logbuf.append(msg)
+		sys.stdout.write(msg + '\n')
 		sys.stdout.flush()
+
+	@classmethod
+	def timed(cls, *args, **kwargs):
+		'''A decorator for crowhandler functions that should be timed.'''
+		def _(f):
+			if args:
+				label = args[0]
+			else:
+				label = f.__name__
+			if 'verbose' in kwargs:
+				verbose = kwargs['verbose']
+			else:
+				verbose = None
+			def _(self, *args, **kwargs):
+				t = None
+				if hasattr(self, 'reporter') and self.reporter:
+					t = timer().start()
+				r = f(self, *args, **kwargs)
+				if t:
+					self.reporter(label, t.check(), verbose=verbose)
+				return r
+			return _
+		return _
+
+	def metricsreporter(self, *args, **kwargs):
+		def keyjoin(c, *args):
+			if isinstance(args[0], (str, unicode)):
+				return args[0]
+			else:
+				return c.join([str(x) for x in args[0]])
+
+		r = CallList()
+		r.close = CallList()
+
+		# If you have any other metrics reporters they can be done
+		# like this, below.  Each reporter function ("_" in these
+		# cases) must return True or False.
+
+		if self.graphite:
+			base = keyjoin('.', args)
+			graphite = self.graphite(base)
+			def _(rel, val, verbose=None):
+				rel = 't_' + rel.replace(' ', '.')
+				graphite[rel] = float(val)
+				return True
+			r.append(_)
+			def _():
+				graphite.close()
+				return True
+			r.close.append(_)
+
+		if self.log:
+			def _(rel, val, verbose=None):
+				if verbose:
+					self.log(verbose % val)
+				else:
+					self.log('t(%s) = %.5fs' % (rel, val))
+				return True
+			r.append(_)
+
+		return r
+
 
 	def tconv(self, s):
 		'''Converts time string to Epoch seconds (int).
@@ -294,8 +441,10 @@ class crowhandler(object):
 
 	def usecache(self, req, params):
 		if 'current' in params and params['current'] in (True, 'true'):
+			self.log('usecache no (current=true)')
 			return False
 		if 'X-Crow-RCache' in req.headers and req.headers['X-Crow-RCache'] == 'no':
+			self.log('usecache no (X-Crow-RCache=no)')
 			return False
 		return True
 
@@ -306,6 +455,7 @@ class crowhandler(object):
 		r = db.cache.find_one({'_id': qkey})
 		if r is None:
 			return qkey, None, 'uncached'
+		self.log('%s is cached until %d (%ds)' % (qkey, r['expires'], r['expires'] - time.time()))
 		if r['expires'] < time.time():
 			# expired
 			return qkey, None, 'expired (%.3fs)' % (r['expires'] - time.time())
@@ -322,6 +472,7 @@ class crowhandler(object):
 			db.cache.insert({'_id': qkey,
 			                 'expires': time.time() + lifetime,
 			                 'data': data})
+		self.log('caching %s for %ds until %d' % (qkey, lifetime, time.time() + lifetime))
 		return qkey
 
 	def logquery(self, db, query):
@@ -355,7 +506,28 @@ class crowhandler(object):
 		return { '$and': args }
 
 	def standardfilter(self, params, startTime, interval):
-		andFilters = []
+		# N.B. the order of terms in the query filter is CRITICAL to
+		# performance. Even with indexes in the database, it's important
+		# to maximize the set as early as possible.  Example: most common
+		# queries look for jobs within a relatively recent time frame,
+		# t(begin):t(end).  They do this by searching for jobs beginning
+		# before t(end) and ending after t(begin).  Since both t are
+		# recent, the majority of jobs in the database are before them.
+		# Therefore it is more constraining to filter first for jobs
+		# completed after t(begin) than to filter first for jobs beginning
+		# before t(end).
+
+		# XXX note that the reverse is true if we're searching deep in
+		# history.  It would be good to do smarter dynamic query
+		# optimization here, but lacking that let's optimize to the more
+		# common scenario.
+
+		# It appears that Mongo cannot optimize (A1|A2) & B & C internally
+		# into a query that will take advantage of compound indexes over (A,
+		# B, C), so we need to expand this out to (A1 & B & C) | (A2 & B & C)
+		# ourselves.
+
+		# Let's start by defining some symbolic subfilters.
 
 		# jobs must have been queued before our interval ended
 		began_before_interval = {'lifecycle.queued': {'$lt': startTime + interval}}
@@ -366,22 +538,38 @@ class crowhandler(object):
 		# ...or have completed after our interval began
 		completed_after_interval = {'lifecycle.unobserved': {'$gt': startTime}}
 
-		andFilters.append(began_before_interval)
-		andFilters.append(self._or(in_queue, completed_after_interval))
+		# maybe sometimes we care about this?
+		project_exists = {'latest.ProjectName': {'$exists': True}}
 
-		if (params.project == 'all'):
-			andFilters.append({'latest.ProjectName': {'$exists': True}})
-		else:
-			andFilters.append(self.mongofilter(lambda p: {'latest.ProjectName': p}, params.project))
+		# if we need to isolate single projects
+		project_is_f = lambda p: {'latest.ProjectName': p}
 
+		# or users
+		user_is_f = lambda u: {'latest.User': {'$regex': u + '@*'}}
+
+		_1 = [
+			in_queue,
+			began_before_interval,
+		]
+		if (params.project != 'all'):
+			_1.append(project_is_f(params.project))
 		if (params.user != 'all'):
-			andFilters.append(self.mongofilter(lambda u: {'latest.User': {'$regex': u + '@*'}}, params.user))
-
+			_1.append(user_is_f(params.user))
 		if (params.task != 'all'):
-			andFilters.append({'latest.ClusterId': int(params.task)})
+			_1.append({'latest.ClusterId': int(params.task)})
 
-		select = self._and(*andFilters)
-		return select
+		_2 = [
+			completed_after_interval,
+			began_before_interval,
+		]
+		if (params.project != 'all'):
+			_2.append(project_is_f(params.project))
+		if (params.user != 'all'):
+			_2.append(user_is_f(params.user))
+		if (params.task != 'all'):
+			_2.append({'latest.ClusterId': int(params.task)})
+
+		return self._or(self._and(*_1), self._and(*_2))
 
 	def readparams(self, template):
 		# We could optimize slightly here by moving this to the caller
@@ -393,7 +581,7 @@ class crowhandler(object):
 		for key in params.keys():
 			if key in req:
 				params[key] = parsers[key](req[key])
-		db = self.app.getDB(params.pool)
+		db = self.app.dbmgr.conn(params.pool)
 		return db, params
 
 	def timedomain(self, params):
@@ -406,10 +594,18 @@ class crowhandler(object):
 		else:
 			interval = params.hours * 3600
 			startTime = self.tconv(params.start)
-		self.log('interval = %d + %d (%s++)' % (startTime, interval, time.ctime(startTime)))
-		extra = startTime % interval
+
+		# find how much over the zero bin boundary our start time is
+		extra = startTime % params.binwidth
+		# wind start back by that much, to place it at the interval boundary
 		startTime -= extra
 		interval += extra
+
+		# account for requested tzoff (hours)
+		startTime -= params.tzoff * 60 * 60
+
+		self.log('interval = %d + %d (%s++)' % (startTime, interval, time.ctime(startTime)))
+
 		return startTime, interval
 
 	def cachecheck(self, db, params):
@@ -439,26 +635,13 @@ class crowhandler(object):
 		# no cache result
 		return None
 
-	@timer.timed()
-	def query(self, db, select, fetch):
-		#t = timer().start()
-		rows = db.jobs.find(select, fetch)
-		#self.log('t(mongodb) = %.5fs' % t.check())
-		return rows
-
-
-	@timer.timed()
-	def retrieve(self, rows):
-		return list(rows)
-
 
 class current(crowhandler):
 	exposed = True
 
 	cacheignores = [
-		# n.b. width doesn't affect queried data, so ignore that in /current queries
-		'width',
-		# current doesn't either - it only changes whether we check for cached data
+		# current doesn't affect queried data, so ignore that in /current queries
+		# (it only changes whether we check for cached data)
 		'current',
 	]
 
@@ -514,6 +697,7 @@ class current(crowhandler):
 			]
 		}
 
+		db.close()
 		return result
 
 
@@ -524,15 +708,41 @@ class starts(crowhandler):
 	# some query params should not differentiate one qstring from another --
 	# we want to ignore them for the purpose of generating a cache hash.
 	cacheignores = [
-		# n.b. width doesn't affect queried data, so ignore that in /current queries
-		'width',
-		# current doesn't either - it only changes whether we check for cached data
+		# current doesn't affect queried data, so ignore that in /current queries
+		# (it only changes whether we check for cached data)
 		'current',
 	]
 
 
-	# The following three lambdas are all we need to evaluate correct
-	# bins for any facet of a job's lifecycle.  The three lambdas conform
+
+	def old_startend(self, r, prop):
+		if prop in r['latest']:
+			stime = r['latest'][prop]
+		else:
+			stime = self.curtime + 1
+
+		if 'CompletionDate' in r['latest']:
+			etime = r['latest']['CompletionDate']
+		else:
+			etime = self.curtime
+
+		return stime, etime
+
+	def _startend(self, r, startprops):
+		start = 0
+		for prop in startprops:
+			if prop in r['lifecycle'] and r['lifecycle'][prop]:
+				start = r['lifecycle'][prop]
+				break
+
+		for prop in 'completed dequeued'.split():
+			if prop in r['lifecycle'] and r['lifecycle'][prop]:
+				return start, r['lifecycle'][prop]
+		return start, r['lifecycle']['unobserved']
+
+
+	# The following functions evaluate correct
+	# bins for any facet of a job's lifecycle.  The evaluators conform
 	# to a common interface, even though they don't all use the same
 	# inputs.
 	# 
@@ -553,45 +763,94 @@ class starts(crowhandler):
 	# decreases by an order of magnitude.
 
 
-	# Determine which bins indices (for a bin set defined by start
+	# Determine which bins' indices (for a bin set defined by start
 	# and width) intersect a time range given by (stime, etime).
 	#
-	# This decides during which bins' periods a job was running.
-	_running = lambda stime, etime, start, width: \
-	                  (int((stime - start) / width),
-		               int((etime - start) / width))
+	# This decides during which bins' periods a job was in queue.
+	def _inqueue(self, r, start, width, max):
+		#stime, etime = self._startend(r, 'JobStartDate')
+		stime, etime = self._startend(r, ['started', 'queued'])
+		first, last = int((stime - start) / width), int((etime - start) / width)
+		if first < 0:
+			first = 0
+		if last > max or last < 0:
+			last = max
+		return first, last
+
+	# When was it actually in running state?
+	def _running(self, r, start, width, max):
+		if r['latest']['JobStatus'] == JobStates.running:
+			return self._inqueue(r, start, width, max)
+		else:
+			return None, None
+
+	# When was it idle?
+	def _idle(self, r, start, width, max):
+		if r['latest']['JobStatus'] == JobStates.idle:
+			return self._inqueue(r, start, width, max)
+		else:
+			return None, None
+
+	# When was it held?
+	def _held(self, r, start, width, max):
+		if r['latest']['JobStatus'] == JobStates.held:
+			return self._inqueue(r, start, width, max)
+		else:
+			return None, None
 
 	# Determine which bin's index (for a bin set defined by start
 	# and width) contains a time point given by stime.  etime
 	# is ignored; the result range can include only one bin.
 	#
 	# This decides during which bin's period a job started.
-	_started = lambda stime, etime, start, width: \
-	                  (int((stime - start) / width),
-		               int((stime - start) / width))
+	def _started(self, r, start, width, max):
+		#stime, etime = self._startend(r, 'JobCurrentStartDate')
+		stime, etime = self._startend(r, ['started', 'queued'])
+		first, last = int((stime - start) / width), int((etime - start) / width)
+		if first < 0:
+			first = 0
+		return first, first
 
 	# Determine which bin's index (for a bin set defined by start
 	# and width) contains a time point given by etime.  stime
 	# is ignored; the result range can include only one bin.
 	#
 	# This decides during which bin's period a job completed.
-	_finished = lambda stime, etime, start, width: \
-	                   (int((etime - start) / width),
-		                int((etime - start) / width))
+	def _finished(self, r, start, width, max):
+		#stime, etime = self._startend(r, 'JobStartDate')
+		stime, etime = self._startend(r, 'started')
+		stime, etime = self._startend(r, ['started', 'queued'])
+		first, last = int((stime - start) / width), int((etime - start) / width)
+		return last, last
 
-	# Map each job relation  (is running during, did start during, etc.)
-	# to one of the intersection lambdas above.  Pair the lambda with
-	# the Condor classad that determines membership.
+
+	def _submitted(self, r, start, width, max):
+		#stime, etime = self._startend(r, 'QDate')
+		stime, etime = self._startend(r, ['queued'])
+		first, last = int((stime - start) / width), int((etime - start) / width)
+		if first < 0:
+			first = 0
+		return first, first
+
+	# Map each job relation (is running during, did start during, etc.)
+	# to:
+	#   * one of the intersection lambdas above;
+	#   * the Condor classad that determines membership;
+	#   * a lambda that tells how many jobs to log to the bin
 	rel = {
-		'default': (_running, 'JobStartDate'),
-		'running': (_running, 'JobStartDate'),
-		'started': (_started, 'JobStartDate'),
-		'finished': (_finished, 'JobStartDate'),
-		'submitted': (_started, 'QDate'),
+		'default': (_running, lambda r: 1),
+		'submitted': (_submitted, lambda r: 1),
+		'inqueue': (_inqueue, lambda r: 1),
+		'idle': (_idle, lambda r: 1),
+		'held': (_held, lambda r: 1),
+		'running': (_running, lambda r: 1),
+		'started': (_started, lambda r: 1),
+		'finished': (_finished, lambda r: 1),
 	}
 
 	def __call__(self, *args, **kwargs):
 		self.log('initial postdata: %s' % self.request.json)
+		t_total = timer().start()
 
 		# XXX consider putting db and params into self
 
@@ -607,13 +866,24 @@ class starts(crowhandler):
 			'hours': [0, int],
 			#'bins': [0, int],
 			'binwidth': [0, int],
+			'boundary': [0, int],
 			'current': ['false', self.parsebool],		# euphemism: current == True -> no caching please
+			'tzoff': [0, int],
 		})
+		self.log('processed params: %s' % str(params))
 
 		startTime, interval = self.timedomain(params)
+		self.log('cacheduration will be %d' % cacheduration(interval))
+
+		# create a metrics reporter for this query
+		# XXX this is a magic name. @timed deco uses it.
+		self.reporter = self.metricsreporter('%s.%04dh' % (params.pool, params.hours))
 
 		# sanitize binwidth
-		params.binwidth = sanitime(params.binwidth);
+		# we're sanitizing this at the caller now, I think we should just
+		# let the caller ask for whatever it wants so that we needn't keep
+		# the sanitizing logic in sync between them.
+		#params.binwidth = sanitime(params.binwidth);
 
 		# init binning device
 		bins = magicbag(params.binwidth, interval)
@@ -621,6 +891,8 @@ class starts(crowhandler):
 		# if cached and cached results are wanted, return those
 		results = self.cachecheck(db, params)
 		if results:
+			db.close()
+			self.reporter.close()
 			return results
 
 		# need to tune the db selection based on $rel
@@ -631,11 +903,17 @@ class starts(crowhandler):
 			'latest.ProjectName': 1,
 			'latest.JobStartDate': 1,
 			'latest.CompletionDate': 1,
+			'latest.NumJobStarts': 1,
 			'latest.User': 1,
 			'latest.ClusterId': 1,
 			'latest.Owner': 1,
+			'lifecycle.queued': 1,      # entered job queue
+			'lifecycle.started': 1,     # first started on worker
+			'lifecycle.completed': 1,   # completed on worker (if completed; removed jobs not complete)
+			'lifecycle.dequeued': 1,    # removed from queue
+			'lifecycle.unobserved': 1,  # first time job known not to be in queue
+			# if unobserved > 0, job is historical. if == 0, it's believed to be in queue
 		})
-
 
 		# With the number of ops we're performing in application space here
 		# (vs database space) it's actually more efficient to convert this
@@ -643,14 +921,14 @@ class starts(crowhandler):
 		# operations in python instead of in mongo.  So first, retrieve all
 		# rows and make into a list.
 		rows = self.retrieve(rows)
-		self.log('selector found %d jobs' % len(rows))
+		self.reporter('jobs', len(rows), verbose='selector found %d jobs')
 
 
 		# This function performs value distinction across the result
 		# set.  We could have asked Mongo to do it, but this is faster
 		# once we've retrieved all the results into a native list.
 		# OLD CODE: groups = rows.distinct('latest.' + params.groupby) 
-		@timer.timed('distinct')
+		@crowhandler.timed('distinct')
 		def mydistinct(f):
 			groups = {}
 			for row in rows:
@@ -684,14 +962,16 @@ class starts(crowhandler):
 
 		# Drop jobs into bins according to our search relation
 		# and their time attributes.
-		self.bin(bins, params, rows, startTime)
+		totals = self.bin(bins, params, rows, startTime)
 
 		result = {
 			'plot': [],
 		}
 		for p in bins.keys():
+			if totals[p] == 0:
+				continue
 			series = {
-				'name': p + ' (' + str(groups[p]) + ')',
+				'name': p + ' (' + str(totals[p]) + ')',
 				'data': [(v.low, v.value) for v in bins[p]],
 			}
 			result['plot'].append(series)
@@ -700,34 +980,56 @@ class starts(crowhandler):
 		# even if we asked for no caches on query, we will take advantage of
 		# having current results, and cache this result for the next caller
 		qkey = self.cache(db, params, json.dumps(result), lifetime=cacheduration(interval))
-		self.log('t(cache %s) = %.5fs' % (qkey, t.check()))
+		self.reporter('cache', t.check(), verbose='t(cache %s) = %%.5fs' % qkey)
+		db.close()
+
+
+		# Add the log to the returned data
+		result['log'] = self.logbuf
+		self.reporter('total', t.check(), verbose='t(total) = %.5fs')
+		self.reporter.close()
 		return result
 
 
-	@timer.timed('binning')
+	@crowhandler.timed()
+	def query(self, db, select, fetch):
+		rows = db.jobs.find(select, fetch)
+		return rows
+
+
+	@crowhandler.timed()
+	def retrieve(self, rows):
+		return list(rows)
+
+
+	@crowhandler.timed('binning')
 	def bin(self, bins, params, rows, start):
-		keyprop = self.rel[params.rel][1]
+		n = 0
+		totals = {}
+		diagfp = None #open('/tmp/crowlog.%d' % self.curtime, 'w')
 		for r in rows:
 			# each r is a job record
 			group = r['latest'][params.groupby]
-			if keyprop in r['latest']:
-				stime = r['latest'][keyprop]
-			else:
-				stime = self.curtime + 1
-			if 'CompletionDate' in r['latest']:
-				etime = r['latest']['CompletionDate']
-			else:
-				etime = self.curtime
-			first, last = self.rel[params.rel][0](stime, etime, start, bins.width)
-			if first < 0:
-				first = 0
-			if last > bins.nbins:
-				last = bins.nbins
+			if group not in totals:
+				totals[group] = 0
+
+			first, last = self.rel[params.rel][0](self, r, start, bins.width, bins.nbins)
+			if first is None and last is None:
+				continue
+
+			if diagfp:
+				print >>diagfp, '%d %s [%d %d] %d' % (self.curtime, r['_id'], first, last, bins.nbins)
+
+			totals[group] += 1
+
 			for b in range(first, last+1):
 				try:
-					bins[group][b].value += 1
+					bins[group][b].value += self.rel[params.rel][1](r)
 				except IndexError:
 					pass
+		if diagfp:
+			diagfp.close()
+		return totals
 
 
 class distincts(crowhandler):
@@ -740,7 +1042,6 @@ class distincts(crowhandler):
 	def __call__(self, *args, **kwargs):
 		req = self.request.json
 
-		db = self.app.getDB(req['pool'])
 
 		interval = 720 * 3600
 		if 'interval' in req:
@@ -804,10 +1105,14 @@ class crowmw(object):
 
 	def status(self):
 		maxrss, idrss = self.memory()
+		load1, load5, load15 = os.getloadavg()
 		if self.graphite:
 			self.graphite['requests'] = 1
 			self.graphite['memory.maxrss'] = maxrss
 			self.graphite['memory.unshared'] = idrss
+			self.graphite['load.load1'] = load1
+			self.graphite['load.load5'] = load5
+			self.graphite['load.load15'] = load15
 
 		# server.memorylimit gives upper boundary on memory utilization
 		limit = 8192
@@ -816,7 +1121,8 @@ class crowmw(object):
 			limit = self.config.getint('server', 'memorylimit')
 		if maxrss / (1024 * 1024) > limit:
 			print 'memory limit breached (%d)' % limit
-			sys.exit(255)
+			# simple exit often fails
+			os.kill(os.getpid(), signal.SIGTERM)
 
 
 def main(args):
@@ -840,16 +1146,40 @@ def main(args):
 		cfg.read(file)
 
 	file = base + '.ini'
-	for path in ('/etc', file), (home, 'etc', file), (home, file):
+	for path in ('/etc', file), (home, 'etc', file), (home, file), (home, 'server', file):
 		file = os.path.join(*path)
 		#print 'Trying %s ...' % file
 		cfg.read(file)
 
 	mw = crowmw(cfg)
 	cherrypy.config.update({'tools.log_headers.on': False})
-	if dowser:
-		cherrypy.tree.mount(dowser.Root(), '/dowser')
-	cherrypy.quickstart(mw, '/', '/web/crow/server/crow-server.conf')
+	#if dowser:
+	#	cherrypy.tree.mount(dowser.Root(), '/dowser')
+
+	cpy = {
+		'global': {
+			'server.socket_host': '0.0.0.0',
+			'server.socket_port': 8080,
+			'log.screen': True,
+			'log.access_file': None,
+			'server.thread_pool': 100,
+		},
+		'/': {
+			'response.timeout': 6000,
+			'request.dispatch': cherrypy.dispatch.MethodDispatcher(),
+			'tools.sessions.on': False,
+			'tools.response_headers.on': False,
+		},
+	}
+
+	if cfg.has_section('cherrypy'):
+		if cfg.has_option('cherrypy', 'socket_host'):
+			cpy['global']['server.socket_host'] = cfg.get('cherrypy', 'socket_host')
+		if cfg.has_option('cherrypy', 'socket_port'):
+			cpy['global']['server.socket_port'] = cfg.getint('cherrypy', 'socket_port')
+
+	cherrypy.quickstart(mw, '/', cpy)
+	#no longer#cherrypy.quickstart(mw, '/', '/web/crow/server/crow-server.conf')
 
 
 if __name__ == '__main__':	  

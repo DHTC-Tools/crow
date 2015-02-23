@@ -6,6 +6,7 @@
 	<link rel="stylesheet" type="text/css"
 		href="//code.jquery.com/ui/1.10.3/themes/redmond/jquery-ui.css">
 
+	<script src="//code.jquery.com/jquery-2.1.1.min.js"></script>
 	<script type="text/javascript" language="javascript"
 		src="//code.jquery.com/jquery-1.11.1.min.js"></script>
 	<script src="//code.jquery.com/ui/1.10.3/jquery-ui.js"></script>
@@ -16,7 +17,11 @@
 	<script type="text/javascript" language="javascript"
 		src="/assets/js/URI.min.js"></script>
 
-	<script src="//code.highcharts.com/highcharts.js"></script>
+	<!-- script src="//code.highcharts.com/highcharts.js"  /script -->
+	<!-- there is a bug in the release version of highcharts that this
+	     local copy fixes. Unfortunately I don't recall the nature of
+	     the bug, but I will, and then will document. -->
+	<script src="highcharts.js"></script>
 	<!-- script src="//code.highcharts.com/modules/exporting.js" -->
 
 	<link rel="stylesheet" type="text/css" href="crow.css">
@@ -24,8 +29,23 @@
 <body>
 
 <!-- Loading/status area -->
-<div id="flying">
+<!-- set class="daytime" for daytime crow, class="midnight" for midnight crow -->
+<div id="flying" class="daytime">
 	<div id="moon"></div>
+	<div class="clouds">
+		<div class="cloud">
+			<div class="cloud-bubble dummy"></div>
+			<div class="cloud-bubble"></div>
+			<div class="cloud-bubble"></div>
+			<div class="cloud-bubble"></div>
+		</div>
+		<div class="cloud">
+			<div class="cloud-bubble dummy"></div>
+			<div class="cloud-bubble"></div>
+			<div class="cloud-bubble"></div>
+			<div class="cloud-bubble"></div>
+		</div>
+	</div>
 	<img src="flying.gif"></img>
 	<div class="status">
 		<span class="name">crow</span>
@@ -33,6 +53,58 @@
 		<span class="status">is scavenging data</span>
 	</div>
 	<p class="credit">Flying raven by <a href="http://jesseth.deviantart.com/">Jessie Mollodovsky</a></p>
+</div>
+
+<!-- controls -->
+<div id="controls">
+  <div class="control">
+    <label for="groupby">Group by:</label>
+    <div class="input"><select id="groupby"></select></div>
+  </div>
+  <div class="control">
+    <label for="rel">History (job phase):</label>
+    <div class="input"><select id="rel"></select></div>
+  </div>
+  <div class="control hidden">
+    <label for="width">Width:</label>
+    <div class="input"><input id="width"></input>  (defaults to window size)</div>
+  </div>
+  <div class="control hidden">
+    <label for="height">Height:</label>
+    <div class="input"><input id="height"></input>  (defaults to window size)</div>
+  </div>
+  <div class="control">
+    <label for="hours">Timeframe:</label>
+    <div class="input"><select id="hours"></select></div>
+  </div>
+  <div class="control hidden">
+    <label for="minbin">Minimum bin width:</label>
+    <div class="input"><input id="minbin"></input>  (in pixels: for auto-scaling of results)</div>
+  </div>
+  <div class="control">
+    <label for="submit">&nbsp;</label>
+    <div class="input"><button id="submit" value="Update" onclick="reload();">Update</button></div>
+  </div>
+  <div class="control">
+    <div class="input"><input id="moreopts" type="checkbox"/>&nbsp;More options</div>
+    <div class="input"><input id="nocache" type="checkbox"/>&nbsp;Use latest data (slower)</div>
+  </div>
+  <br class="clear"/>
+  <div class="optional">
+    <div class="control">
+      <label for="pool">Pool:</label>
+      <div class="input"><select id="pool"></select></div>
+    </div>
+    <div class="control x3wide">
+      <label for="start">Start time/date:</label>
+      <div class="input"><input id="start"></input>  (try values like "Sep 15", "6am". Times must be UTC.)</div>
+    </div>
+    <div class="control hidden">
+      <label for="end">End time/date:</label>
+      <div class="input"><input id="end"></input>  (you can use start or end, not both. Use hours instead.)</div>
+    </div>
+    <br class="clear"/>
+  </div>
 </div>
 
 <!-- Plot -->
