@@ -1,0 +1,3 @@
+#!/bin/sh
+
+ps -eo pid,args | grep /usr/local/cron/crow-db-cache | awk '{print "kill", $1}' | sh

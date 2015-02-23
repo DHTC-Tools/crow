@@ -1,0 +1,11 @@
+#!/bin/sh
+
+while true; do
+	ps -eorss,vsz,args | awk '
+	/server\/crow-server/ && !/awk/ {
+		print "test.dgc.crow.server.memmon.rss", $1 * 1024, date;
+		print "test.dgc.crow.server.memmon.vsz", $2 * 1024, date;
+	}' date=$(date +%s) \
+	| nc graphite.mwt2.org 2003
+	sleep 60
+done
