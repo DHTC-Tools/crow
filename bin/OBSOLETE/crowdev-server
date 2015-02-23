@@ -1,0 +1,904 @@
+#!/usr/bin/env python
+#
+
+import os
+import sys
+import random
+import hashlib
+import urllib2
+import socket
+import string
+import time
+import ConfigParser
+import json
+import inspect
+import functools
+import resource
+import signal
+
+import pymongo
+import cherrypy
+
+try:
+	import dowser
+except ImportError:
+	dowser = None
+
+minute = 60
+hour = 60 * minute
+day = 24 * hour
+week = 7 * day
+month = 30 * day
+year = 365 * day
+
+# Ensure that all operations are done in UTC
+os.environ['TZ'] = 'UTC'
+time.tzset()
+
+
+class GraphiteAdapter(object):
+	def __init__(self, address, prefix, proto='tcp'):
+		if hasattr(address, 'lower'):
+			address = (address, 2003)
+		self.address = address
+		self.proto = proto
+		self.prefix = prefix
+		self.socket = None
+		self.reopen()
+
+	def reopen(self):
+		if self.socket:
+			self.socket.close()
+		if self.proto == 'tcp':
+			self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		elif self.proto == 'udp':
+			self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+		self.socket.connect(self.address)
+
+	def close(self):
+		if self.socket:
+			self.socket.close()
+		self.socket = None
+
+	def __setitem__(self, key, value):
+		t = time.time()
+		name = self.prefix + '.' + str(key)
+		value = str(value)
+		self.socket.send('%s %s %d\n' % (name, value, int(t)))
+
+
+class Config(ConfigParser.RawConfigParser):
+	def getlist(self, section, option):
+		return [x.strip() for x in self.get(section, option).split(',')]
+
+
+def cacheduration(t):
+	# Cache duration is a stepwise function of request period
+	durations = [
+		# (if req period >, set cache duration to)
+		(0, 2*minute),         # cache low values only briefly
+		(2*hour, 10*minute),  # above 2h, cache 10 minutes
+		(day, hour),         # above a day, cache 1 hour
+		(2*week, day),       # cache 2-week views for 1 day
+		(6*month, week),     # cache 6-month views for 1 week
+	]
+
+	duration = 0
+	for treq, tdur in durations:
+		if t > treq:
+			duration = tdur
+
+	# temporary? short-lived items cache short times, long last longer
+	if duration > 2*minute:
+		duration = day
+	return duration
+
+
+def sanitime(sec):
+	for sane in (minute, 2*minute, 5*minute, 10*minute, 15*minute,
+	             20*minute, 30*minute, hour, 2*hour, 3*hour,
+	             4*hour, 6*hour, 12*hour, day, week):
+		if sec <= sane:
+			return sane
+
+	n = 0
+	while sec > week * n:
+		n += 1
+
+	return week * n
+
+
+class timer(object):
+	def __init__(self):
+		self._start = None
+
+	def start(self):
+		self._start = time.time()
+		return self
+
+	def check(self):
+		return time.time() - self._start
+
+	def stop(self):
+		self._stop = time.time()
+		return self._stop - self._start
+
+	@classmethod
+	def timed(cls, *args):
+		'''A decorator for functions that should be timed.'''
+		def _(f):
+			if args:
+				label = args[0]
+			else:
+				label = f.__name__
+			@functools.wraps(f)
+			def _(*args, **kwargs):
+				caller = inspect.currentframe(1)
+				caller = caller.f_locals['self']
+				t = cls().start()
+				r = f(*args, **kwargs)
+				caller.log('t(%s) = %.5fs' % (label, t.check()))
+				return r
+			return _
+		return _
+
+class frob(dict):
+	def __getattr__(self, key):
+		return self[key]
+	def __setattr__(self, key, value):
+		self[key] = value
+
+
+class magicbag(dict):
+	def __init__(self, width, domain):
+		self._width = width
+		self._domain = domain
+		self.report()
+
+	@property
+	def nbins(self):
+		return int((self._domain + self._width - 1) / self._width)
+
+	@property
+	def domain(self):
+		return self._domain
+
+	@domain.setter
+	def domain(self, value):
+		self._domain = value
+		self.report()
+
+	@property
+	def width(self):
+		return self._width
+
+	@width.setter
+	def width(self, value):
+		self._width = value
+		self.report()
+
+	def report(self):
+		print "n=%d  d=%d  w=%d" % (self.nbins, self._domain, self.width)
+
+	def prepare(self, keys, start=0):
+		# Init the bins.  Multiply low val by 1000 because Highcharts
+		# takes timestamps in milliseconds, while our data is in seconds.
+		# Each bin value is a 2-tuple of the curre
+		mkbin = lambda i: frob({
+			'low': 1000 * (start + (i * self.width)),
+			'value': 0,
+		})
+		for key in keys:
+			self[key] = [mkbin(i) for i in xrange(self.nbins)]
+
+
+class dbmgr(object):
+	def __init__(self, dbserver):
+		self.dbserver = dbserver
+
+	def conn(self, pool):
+		# it doesn't matter what we do internally here, so long
+		# as we return a mongoclient db instance and provide a
+		# close() method on it.
+		client = pymongo.MongoClient(self.dbserver)
+		if not pool.startswith('crow_'):
+			pool = 'crow_' + pool
+		if not hasattr(client, pool):
+			return None
+		db = getattr(client, pool)
+		db.close = client.close
+		return db
+		
+
+class crowapp(object):
+	exposed = True
+
+	def __init__(self, mw, handler):
+		self.mw = mw
+		self.handler = handler
+		_ = hashlib.md5()
+		_.update(str(time.time()) + str(id(self)))
+		self.instance = handler.__name__ + '.' + _.hexdigest()[:8]
+		self.reqno = 0
+		self.dbserver, _ = self.mw.config.getlist('db', 'default')
+		self.client = pymongo.MongoClient(self.dbserver)
+		self.dbmgr = dbmgr(self.dbserver)
+
+	@cherrypy.tools.accept(media='application/json')
+	@cherrypy.tools.json_out()
+	@cherrypy.tools.json_in()
+	def POST(self, *args, **kwargs):
+		self.reqno += 1
+		# XXX ugh
+		if self.reqno > 50000:
+			os.kill(os.getpid(), signal.SIGTERM)
+		handler = self.handler(self, cherrypy.request, self.reqno)
+		return handler(*args, **kwargs)
+
+
+class crowhandler(object):
+	cacheignores = []
+
+	try:
+		import parsedatetime
+		pdt = parsedatetime.Calendar()
+	except ImportError:
+		pdt = None
+
+	@staticmethod
+	def parsebool(s):
+		if hasattr(s, 'lower'):
+			s = s.lower()
+		if s in ('no', 'off', 'false'):
+			return False
+		if s == 0:
+			return False
+		return True
+
+	def __init__(self, app, req, reqno):
+		self.app = app
+		self.request = req
+		self.reqno = reqno
+		self.reqid = self.app.instance + '.' + str(self.reqno)
+		self.curtime = int(time.time())
+		self._usecache = True
+
+		self.app.mw.status()
+
+	def log(self, msg):
+		print '[%s %.3f] %s' % (self.reqid, time.time(), msg)
+		sys.stdout.flush()
+
+	def tconv(self, s):
+		'''Converts time string to Epoch seconds (int).
+		If parsedatetime available, we can convert various English
+		expressions of time.  If not, we can only convert Epoch
+		seconds as a string to Epoch seconds as int.
+		'''
+
+		try:
+			return int(s)
+		except ValueError:
+			tm, mode = self.pdt.parse(s)
+			ptm = list(tm)
+			tmnow = list(time.gmtime())
+
+			def _(tm):
+				if mode == 1:
+					tm = tm[:3] + [0, 0, 0] + tm[6:]
+					# if future, subtract a year
+					if time.mktime(tm) > time.mktime(tmnow):
+						tm[0] -= 1
+						return _(tm)
+				if mode == 2:
+					tm = tmnow[:3] + tm[3:]
+					# if future, subtract a day
+					if time.mktime(tm) > time.mktime(tmnow):
+						return time.mktime(tm) - 86400
+				return time.mktime(tm)
+
+			return _(ptm)
+
+	def querykey(self, query):
+		md5 = hashlib.md5()
+		md5.update(self.__class__.__name__)	# method/path, e.g. "starts"
+		for key in sorted(query.keys()):
+			if key in self.cacheignores:
+				continue
+			md5.update(key)
+			md5.update(str(query[key]))
+		return md5.hexdigest()[:8]
+
+	def usecache(self, req, params):
+		if 'current' in params and params['current'] in (True, 'true'):
+			return False
+		if 'X-Crow-RCache' in req.headers and req.headers['X-Crow-RCache'] == 'no':
+			return False
+		return True
+
+	def cached(self, req, db, query):
+		qkey = self.querykey(query)
+		if 'X-Crow-RCache' in req.headers and req.headers['X-Crow-RCache'] == 'no':
+			return qkey, None, 'nocache'
+		r = db.cache.find_one({'_id': qkey})
+		if r is None:
+			return qkey, None, 'uncached'
+		if r['expires'] < time.time():
+			# expired
+			return qkey, None, 'expired (%.3fs)' % (r['expires'] - time.time())
+		return qkey, r['data'], 'ok'
+
+	def cache(self, db, query, data, lifetime=10*minute):
+		qkey = self.querykey(query)
+		r = db.cache.find_one({'_id': qkey})
+		if r:
+			db.cache.update({'_id': qkey},
+			                {'expires': time.time() + lifetime,
+			                 'data': data})
+		else:
+			db.cache.insert({'_id': qkey,
+			                 'expires': time.time() + lifetime,
+			                 'data': data})
+		return qkey
+
+	def logquery(self, db, query):
+		qkey = self.querykey(query)
+		r = db.qstat.find_one({'_id': qkey})
+		if r:
+			db.qstat.update({'_id': qkey},
+			                {'count': r['count'] + 1,
+			                 'last': time.time(),
+			                 'query': json.dumps(query)})
+		else:
+			db.qstat.insert({'_id': qkey,
+			                 'count': 1,
+			                 'last': time.time(),
+			                 'query': json.dumps(query)})
+		return qkey
+
+	def mongofilter(self, f, expr):
+		if ',' in expr:
+			users = expr.split(',')
+			return {'$or': [f(user) for user in users]}
+		else:
+			return f(expr)
+
+	@staticmethod
+	def _or(*args):
+		return { '$or': args }
+
+	@staticmethod
+	def _and(*args):
+		return { '$and': args }
+
+	def standardfilter(self, params, startTime, interval):
+		andFilters = []
+
+		# jobs must have been queued before our interval ended
+		began_before_interval = {'lifecycle.queued': {'$lt': startTime + interval}}
+
+		# jobs must either be currently in queue...
+		in_queue = {'lifecycle.unobserved': 0}
+
+		# ...or have completed after our interval began
+		completed_after_interval = {'lifecycle.unobserved': {'$gt': startTime}}
+
+		andFilters.append(began_before_interval)
+		andFilters.append(self._or(in_queue, completed_after_interval))
+
+		if (params.project == 'all'):
+			andFilters.append({'latest.ProjectName': {'$exists': True}})
+		else:
+			andFilters.append(self.mongofilter(lambda p: {'latest.ProjectName': p}, params.project))
+
+		if (params.user != 'all'):
+			andFilters.append(self.mongofilter(lambda u: {'latest.User': {'$regex': u + '@*'}}, params.user))
+
+		if (params.task != 'all'):
+			andFilters.append({'latest.ClusterId': int(params.task)})
+
+		select = self._and(*andFilters)
+		return select
+
+	def readparams(self, template):
+		# We could optimize slightly here by moving this to the caller
+		# and doing it only once per instance of the server.  But hold
+		# out - this is a slim gain.
+		params = frob([(k, v) for k, (v, parser) in template.items()])
+		parsers = frob([(k, parser) for k, (v, parser) in template.items()])
+		req = self.request.json
+		for key in params.keys():
+			if key in req:
+				params[key] = parsers[key](req[key])
+		db = self.app.dbmgr.conn(params.pool)
+		return db, params
+
+	def timedomain(self, params):
+		if params.start == 'default' and params.end == 'default':
+			interval = params.hours * 3600
+			startTime = self.curtime - interval
+		elif params.start == 'default':
+			interval = params.hours * 3600
+			startTime = self.tconv(params.end) - interval
+		else:
+			interval = params.hours * 3600
+			startTime = self.tconv(params.start)
+
+		# find how much over the zero bin boundary our start time is
+		extra = startTime % params.binwidth
+		# wind start back by that much, to place it at the interval boundary
+		startTime -= extra
+		interval += extra
+		self.log('interval = %d + %d (%s++)' % (startTime, interval, time.ctime(startTime)))
+
+		return startTime, interval
+
+	def cachecheck(self, db, params):
+		usecache = self.usecache(self.request, params)
+		if usecache:
+			# Query logging is for determining what the most in-demand
+			# queries are.  Don't log queries that refuse the cache;
+			# these are most likely cache-loading queries, so would
+			# have artificially inflated scores if logged.  And if such
+			# a query belongs to a live user, they're obvs asking for
+			# an uncached result, so why use this as a caching metric?
+			self.logquery(db, params)
+
+		# cache check
+		if usecache:
+			t = timer().start()
+			qkey, data, reason = self.cached(self.request, db, params)
+			if data:
+				r = json.loads(data)
+				self.log('t(cache check %s %s) = %.5fs' % (qkey, reason, t.check()))
+				return r
+			else:
+				self.log('t(cache check %s %s) = %.5fs' % (qkey, reason, t.check()))
+		else:
+			self.log('no-cache')
+
+		# no cache result
+		return None
+
+	@timer.timed()
+	def query(self, db, select, fetch):
+		#t = timer().start()
+		rows = db.jobs.find(select, fetch)
+		#self.log('t(mongodb) = %.5fs' % t.check())
+		return rows
+
+
+	@timer.timed()
+	def retrieve(self, rows):
+		return list(rows)
+
+
+class current(crowhandler):
+	exposed = True
+
+	cacheignores = [
+		# current doesn't affect queried data, so ignore that in /current queries
+		# (it only changes whether we check for cached data)
+		'current',
+	]
+
+	def __call__(self, *args, **kwargs):
+		db, params = self.readparams({
+			'pool': ['default', str],
+			'project': ['all', str],
+			'user': ['all', str],
+			'task': ['all', str],
+			'groupby': ['ProjectName', str],
+			'current': [False, self.parsebool],		# euphemism: current == True -> no caching please
+		})
+
+		t = timer().start()
+		rows = db.jobs.find(
+			self._and(
+				{'latest.QDate': {'$gt': time.time() - (14*day)}},
+				{'latest.JobStatus': {'$in': [0, 1, 2, 5, 7]}},
+			),
+			{
+				'latest.QDate': 1,
+				'latest.JobStatus': 1,
+				'latest.ProjectName': 1,
+				'latest.JobStartDate': 1,
+				'latest.CompletionDate': 1,
+				'latest.User': 1,
+				'latest.ClusterId': 1,
+				'latest.Owner': 1,
+			})
+		self.log('t(mongodb) = %.5fs' % t.check())
+
+		count = 0
+		for r in rows:
+			count += 1
+		self.log('%d matching jobs' % count)
+
+		result = {
+			'plot': [
+				{
+					'name': 'member1',
+					'data': [
+						[time1, data1],
+						[time2, data2],
+					]
+				},
+				{
+					'name': 'member2',
+					'data': [
+						[time1, data1],
+						[time2, data2],
+					]
+				},
+			]
+		}
+
+		db.close()
+		return result
+
+
+class starts(crowhandler):
+	exposed = True
+
+	# caching is indexed by the query string, alphasorted by key name. But
+	# some query params should not differentiate one qstring from another --
+	# we want to ignore them for the purpose of generating a cache hash.
+	cacheignores = [
+		# current doesn't affect queried data, so ignore that in /current queries
+		# (it only changes whether we check for cached data)
+		'current',
+	]
+
+
+	# The following three lambdas are all we need to evaluate correct
+	# bins for any facet of a job's lifecycle.  The three lambdas conform
+	# to a common interface, even though they don't all use the same
+	# inputs.
+	# 
+	# A note on methodology.  The naive approach to binning is to iterate
+	# across the full list of bins, checking whether there is any overlap
+	# of a job's lifespan with the timespan of that bin.  That requires
+	# from four to six compare operations per bin, so easily upward of 500
+	# compares for each job in a query result.  THIS IS SLOW, and our
+	# first implementation proved it - simple result sets sometimes took
+	# several minutes to evaluate.
+	# 
+	# Instead, we note that bin matches are not randomly distributed; they
+	# are always contiguous blocks.  We exploit this to find the range of
+	# bins in a set that match the inputs.  We can do this in six compare
+	# operations per job, and then simply increment bin counters for the
+	# selected bins, so we don't even iterate across all bins either.
+	# Evaluation complexity decreases by a factor of around 100; wall time
+	# decreases by an order of magnitude.
+
+
+	# Determine which bins indices (for a bin set defined by start
+	# and width) intersect a time range given by (stime, etime).
+	#
+	# This decides during which bins' periods a job was running.
+	_running = lambda stime, etime, start, width: \
+	                  (int((stime - start) / width),
+		               int((etime - start) / width))
+
+	# Determine which bin's index (for a bin set defined by start
+	# and width) contains a time point given by stime.  etime
+	# is ignored; the result range can include only one bin.
+	#
+	# This decides during which bin's period a job started.
+	_started = lambda stime, etime, start, width: \
+	                  (int((stime - start) / width),
+		               int((stime - start) / width))
+
+	# Determine which bin's index (for a bin set defined by start
+	# and width) contains a time point given by etime.  stime
+	# is ignored; the result range can include only one bin.
+	#
+	# This decides during which bin's period a job completed.
+	_finished = lambda stime, etime, start, width: \
+	                   (int((etime - start) / width),
+		                int((etime - start) / width))
+
+	# Map each job relation  (is running during, did start during, etc.)
+	# to one of the intersection lambdas above.  Pair the lambda with
+	# the Condor classad that determines membership.
+	rel = {
+		'default': (_running, 'JobStartDate'),
+		'running': (_running, 'JobStartDate'),
+		'started': (_started, 'JobStartDate'),
+		'finished': (_finished, 'JobStartDate'),
+		'submitted': (_started, 'QDate'),
+	}
+
+	def __call__(self, *args, **kwargs):
+		self.log('initial postdata: %s' % self.request.json)
+
+		# XXX consider putting db and params into self
+
+		db, params = self.readparams({
+			'pool': ['default', str],
+			'project': ['all', str],
+			'user': ['all', str],
+			'task': ['all', str],
+			'groupby': ['ProjectName', str],
+			'rel': ['running', str],
+			'start': ['default', str],
+			'end': ['default', str],
+			'hours': [0, int],
+			#'bins': [0, int],
+			'binwidth': [0, int],
+			'current': ['false', self.parsebool],		# euphemism: current == True -> no caching please
+		})
+		self.log('processed params: %s' % str(params))
+
+		startTime, interval = self.timedomain(params)
+
+		# sanitize binwidth
+		# we're sanitizing this at the caller now, I think we should just
+		# let the caller ask for whatever it wants so that we needn't keep
+		# the sanitizing logic in sync between them.
+		#params.binwidth = sanitime(params.binwidth);
+
+		# init binning device
+		bins = magicbag(params.binwidth, interval)
+
+		# if cached and cached results are wanted, return those
+		results = self.cachecheck(db, params)
+		if results:
+			db.close()
+			return results
+
+		# need to tune the db selection based on $rel
+		select = self.standardfilter(params, startTime, interval)
+		rows = self.query(db, select, {
+			'latest.QDate': 1,
+			'latest.JobStatus': 1,
+			'latest.ProjectName': 1,
+			'latest.JobStartDate': 1,
+			'latest.CompletionDate': 1,
+			'latest.User': 1,
+			'latest.ClusterId': 1,
+			'latest.Owner': 1,
+		})
+
+
+		# With the number of ops we're performing in application space here
+		# (vs database space) it's actually more efficient to convert this
+		# result set to a list up front, then perform distinction and other
+		# operations in python instead of in mongo.  So first, retrieve all
+		# rows and make into a list.
+		rows = self.retrieve(rows)
+		self.log('selector found %d jobs' % len(rows))
+
+
+		# This function performs value distinction across the result
+		# set.  We could have asked Mongo to do it, but this is faster
+		# once we've retrieved all the results into a native list.
+		# OLD CODE: groups = rows.distinct('latest.' + params.groupby) 
+		@timer.timed('distinct')
+		def mydistinct(f):
+			groups = {}
+			for row in rows:
+				key = f(row)
+				if key in groups:
+					groups[key] += 1
+				else:
+					groups[key] = 1
+			return groups
+
+		# Groups is a mapping of distinct values of params.groupby
+		# (i.e. job owner or projectname) to the number of jobs
+		# bearing that value.
+		groups = mydistinct(lambda x: x['latest'][params.groupby])
+
+
+		# Magicbag is our collation device.  It's a dict in which
+		# each key maps to an array of bins.  Each bin will correspond
+		# to a data point in our graphical plot.
+		# 
+		# Bins denote a span of a continuous domain, e.g. of time
+		# (but not necessarily), so each bin has a low value and
+		# a high value and a width.  The width of each bin is given
+		# by magicbag.width, so we only need to track low value
+		# for each bin -- the high value can be derived.  These
+		# are initialized when you call magicbag.prepare().  The low
+		# value of bin 0's domain is given by the 'start' kwarg;
+		# if not present, it is set to 0.  Each bin's initial
+		# value is also set to 0.
+		bins.prepare(groups.keys(), start=startTime)
+
+		# Drop jobs into bins according to our search relation
+		# and their time attributes.
+		self.bin(bins, params, rows, startTime)
+
+		result = {
+			'plot': [],
+		}
+		for p in bins.keys():
+			series = {
+				'name': p + ' (' + str(groups[p]) + ')',
+				'data': [(v.low, v.value) for v in bins[p]],
+			}
+			result['plot'].append(series)
+
+		t = timer().start()
+		# even if we asked for no caches on query, we will take advantage of
+		# having current results, and cache this result for the next caller
+		qkey = self.cache(db, params, json.dumps(result), lifetime=cacheduration(interval))
+		self.log('t(cache %s) = %.5fs' % (qkey, t.check()))
+		db.close()
+		return result
+
+
+	@timer.timed('binning')
+	def bin(self, bins, params, rows, start):
+		keyprop = self.rel[params.rel][1]
+		for r in rows:
+			# each r is a job record
+			group = r['latest'][params.groupby]
+			if keyprop in r['latest']:
+				stime = r['latest'][keyprop]
+			else:
+				stime = self.curtime + 1
+			if 'CompletionDate' in r['latest']:
+				etime = r['latest']['CompletionDate']
+			else:
+				etime = self.curtime
+			first, last = self.rel[params.rel][0](stime, etime, start, bins.width)
+			if first < 0:
+				first = 0
+			if last > bins.nbins:
+				last = bins.nbins
+			for b in range(first, last+1):
+				try:
+					bins[group][b].value += 1
+				except IndexError:
+					pass
+
+
+class distincts(crowhandler):
+	'''not used'''
+	exposed = True
+	@cherrypy.tools.accept(media='application/json')
+	@cherrypy.tools.json_out()
+	@cherrypy.tools.json_in()
+
+	def __call__(self, *args, **kwargs):
+		req = self.request.json
+
+
+		interval = 720 * 3600
+		if 'interval' in req:
+			interval = req['interval'] * 3600
+
+		ret = {}
+		ret['Tasks'] = []
+		ret['ProjectNames'] = []
+		startTime = int(time.time())-int(interval)
+		rows = db.jobs.find({'latest.CompletionDate': {'$gt': startTime}},{'latest.ProjectName': 1,'latest.User': 1,'latest.ClusterId': 1,'latest.Owner': 1})
+		ret['ProjectNames'] = rows.distinct('latest.ProjectName')
+		ret['Tasks'] = rows.distinct('latest.ClusterId')
+		ret['Users'] = rows.distinct('latest.User')
+		ret['Owners'] = rows.distinct('latest.Owner')
+		for r in range(len(ret['Users'])):
+			ret['Users'][r] = ret['Users'][r].split('@')[0]
+		# print ret
+		return ret
+
+
+class crowmw(object):
+	'''Crow middleware'''
+	exposed = True
+
+	def __init__(self, config):
+		self.config = config
+		self.starts = crowapp(self, starts)
+		self.current = crowapp(self, current)
+		self.graphite = None
+
+		if config.has_section('graphite'):
+			if config.has_option('graphite', 'address'):
+		 		addr = config.get('graphite', 'address')
+		 		addr = config.get('graphite', 'address')
+				if ':' in addr:
+					addr = addr.split(':', 1)
+			else:
+				addr = None
+
+			if config.has_option('graphite', 'prefix'):
+				prefix = config.get('graphite', 'prefix')
+			else:
+				prefix = 'crow.server'
+
+			if addr and prefix:
+				self.graphite = GraphiteAdapter(addr, prefix, proto='udp')
+
+	def memory(self):
+		ru = resource.getrusage(resource.RUSAGE_SELF)
+		# multiplier seems to vary platform to platform; result
+		# -should- be in pages but is not always. Linux is KB,
+		# MacOS is bytes.
+		# So at some point we need to case-switch the platform here.
+		# 
+		# Also, the psutils module may be
+		# a good cross-platform solution.
+		#
+		multiplier = 1024	# linux
+		#multiplier = resource.getpagesize()
+		return (ru.ru_maxrss * multiplier, ru.ru_idrss * multiplier)
+
+	def status(self):
+		maxrss, idrss = self.memory()
+		if self.graphite:
+			self.graphite['requests'] = 1
+			self.graphite['memory.maxrss'] = maxrss
+			self.graphite['memory.unshared'] = idrss
+
+		# server.memorylimit gives upper boundary on memory utilization
+		limit = 8192
+		if self.config.has_section('server') and \
+		   self.config.has_option('server', 'memorylimit'):
+			limit = self.config.getint('server', 'memorylimit')
+		if maxrss / (1024 * 1024) > limit:
+			print 'memory limit breached (%d)' % limit
+			# simple exit often fails
+			os.kill(os.getpid(), signal.SIGTERM)
+
+
+def main(args):
+	# cherrypy.tools.CORS = cherrypy.Tool('before_finalize', CORS)
+
+	cfg = Config()
+
+	# Read .ini file from relative to $0
+	base = os.path.basename(sys.argv[0])
+	home = os.path.dirname(sys.argv[0])
+	parent = os.path.dirname(home)
+	if os.path.split(home)[-1] == 'bin':
+		home = parent
+	if os.path.exists(os.path.join(parent, 'etc')):
+		home = parent
+
+	file = 'crow.ini'
+	for path in ('/etc', file), (home, 'etc', file), (home, file):
+		file = os.path.join(*path)
+		#print 'Trying %s ...' % file
+		cfg.read(file)
+
+	file = base + '.ini'
+	for path in ('/etc', file), (home, 'etc', file), (home, file):
+		file = os.path.join(*path)
+		#print 'Trying %s ...' % file
+		cfg.read(file)
+
+	mw = crowmw(cfg)
+	cherrypy.config.update({'tools.log_headers.on': False})
+	if dowser:
+		cherrypy.tree.mount(dowser.Root(), '/dowser')
+
+	cpy = {
+		'global': {
+			'server.socket_host': '0.0.0.0',
+			'server.socket_port': 8080,
+			'log.screen': True,
+			'log.access_file': None,
+			'server.thread_pool': 100,
+		},
+		'/': {
+			'response.timeout': 6000,
+			'request.dispatch': cherrypy.dispatch.MethodDispatcher(),
+			'tools.sessions.on': False,
+			'tools.response_headers.on': False,
+		},
+	}
+
+	if cfg.has_section('cherrypy'):
+		if cfg.has_option('cherrypy', 'port'):
+			cpy['global']['server.socket_port'] = cfg.getint('cherrypy', 'port')
+
+	cherrypy.quickstart(mw, '/', cpy)
+	#no longer#cherrypy.quickstart(mw, '/', '/web/crow/server/crow-server.conf')
+
+
+if __name__ == '__main__':	  
+	sys.exit(main(sys.argv[1:]))
