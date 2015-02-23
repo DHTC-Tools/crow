@@ -2,7 +2,7 @@
 debug = false
 brand = generic
 detach = true
-log = /var/log/crow-%(brand)s-%(threadid)s.log
+log = /var/log/crow/crow-%(brand)s-%(threadid)s.log
 pidfile = /var/run/crow-%(brand)s-%(threadid)s.pid
 
 [db]
